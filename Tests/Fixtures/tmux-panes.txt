@@ -1,0 +1,29 @@
+%149	90180	1	1	0	9	1	1	✳ prompt-benchmarks	✳ prompt-benchmarks	2.1.284
+%115	73336	1	1	1	quote-composer	1	1	✳ workflow ideas for ops	✳ workflow ideas for ops	2.1.283
+%114	71039	1	0	1	quote-composer	2	1	✳ weekly update skill	✳ weekly update skill	2.1.283
+%118	41523	1	0	1	quote-composer	3	1	✳ data export	✳ data export	2.1.283
+%119	4164	1	0	1	quote-composer	4	1	✳ map directions	✳ map directions	2.1.283
+%6	24609	1	0	1	oakfield-ledger	1	1	~/work/oakfield-ledger	jappleseed@Johns-MBP:~/work/oakfield-ledger	zsh
+%122	60390	1	1	1	oakfield-ledger	2	1	✳ contract v1.1 review	✳ contract v1.1 review	2.1.283
+%138	1475	1	0	1	hub	1	1	✳ managed agents	✳ managed agents	2.1.284
+%139	65358	0	0	1	hub	1	2	✳ managed agents	✳ Recurring digest	2.1.284
+%174	37485	1	1	1	hub	2	1	✳ handoff design	✳ handoff design	2.1.284
+%177	32259	1	0	1	hub	3	1	✳ ram	✳ ram	2.1.284
+%184	77405	1	0	1	hub	4	1	✳ scheduled agents	✳ scheduled agents	2.1.284
+%210	91275	1	0	1	hub	5	1	~	jappleseed@Johns-MBP:~	zsh
+%167	43427	1	0	1	millrace	1	1	✳ Open all artifacts as HTML workflow	✳ Open all artifacts as HTML workflow	2.1.284
+%176	17411	1	0	1	millrace	2	1	✳ Simulation files in qa_testing	✳ Simulation files in qa_testing	2.1.284
+%207	83423	1	0	1	millrace	3	1	✳ code review	✳ code review	2.1.285
+%209	59177	1	0	1	millrace	4	1	✳ inventory context	✳ inventory context	2.1.285
+%211	92170	1	1	1	millrace	5	1	✳ Claude Code	✳ Claude Code	2.1.285
+%212	526	1	0	1	millrace	6	1	✳ inventory visualizations and usage views	✳ inventory visualizations and usage views	2.1.285
+%214	82178	1	0	1	millrace	7	1	✳ UI PRs ready for review	✳ UI PRs ready for review	2.1.285
+%124	29889	1	1	1	compass	1	1	✳ proposal outline	✳ proposal outline	2.1.283
+%188	88017	1	0	1	compass	2	1	✳ dynamic questionaire	✳ dynamic questionaire	2.1.285
+%131	90955	1	1	1	misc	1	1	devbox remote-1	devbox remote-1	mosh-client
+%186	41733	1	0	1	misc	2	1	✳ tmux move	✳ tmux move	2.1.285
+%156	79154	1	0	1	misc	3	1	✳ clip generation	✳ clip generation	2.1.284
+%163	84165	1	0	1	misc	4	1	✳ translate this video	✳ translate this video	2.1.284
+%172	73074	1	0	1	misc	5	1	✳ ask-the-notes	✳ ask-the-notes	2.1.284
+%197	42338	1	0	1	misc	6	1	✳ Copy to clipboard and open Example Editor	✳ Copy to clipboard and open Example Editor	2.1.285
+%75	16849	1	1	0	research	1	1	~/work/research-digest	jappleseed@Johns-MBP:~/work/research-digest	zsh

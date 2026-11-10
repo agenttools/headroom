@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "Headroom helper",
+  "version": "1.0.0",
+  "description": "Tells the Headroom app which tabs use which Chrome process, so it can show memory per tab. Never reads page content.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA0/GzXjfe4QjzID4aD10OyyX2Raezo/mwbDUsMf5wI+0cpVfiHCLFz2A/ZsjOqBMv/1n6w157f/syGZ5EAXzi4h68uiSdrOEIUwGA4nsnr/4ncZP77Q7SS2niPiwhfFNHVxaH4cbXsHd1tUW5mJLF5CWw20FJitW9HbC5HbF1CpoglrCw6XH7aZtEUFUMYXwOyzZpyqFHcPtTAz+aTS2m7xdDrvIgBbGYtgLKbWuRAsDfvtvFLdcZpzeiW68a5FTGRjI4vvr81NLaDniQQciXqQDyk72wE5WWD2yUoyYuZ9h/+/48V2pT33I8OSB6W9QeGvTQ5ke5f/HnDJIW+bFnJwIDAQAB",
+  "permissions": ["tabs", "webNavigation", "sessions", "nativeMessaging", "alarms", "storage"],
+  "background": { "service_worker": "sw.js" },
+  "incognito": "spanning",
+  "minimum_chrome_version": "120"
+}

@@ -1,0 +1,71 @@
+{
+  "_about": [
+    "Overlay for the ownership fixture tests (SPEC section 3). ps.txt and psargs.txt are a `ps` capture of a",
+    "developer Mac (2026-09-30). User, host and project names, and some third-party app names, are fictional stand-ins;",
+    "apps the tests depend on (Chrome, AeroSpace, SwiftBar, Hammerspoon, tmux, colima/lima, doppler) and some other",
+    "common apps keep their real names. `ps` shows no environment, start times or footprints, so this file adds them.",
+    "The CLAUDE_PID values reproduce what KERN_PROCARGS2 showed at capture time:",
+    "  - the tmux server 51951 was started from session 21630 (now dead), so it and every pane shell carry CLAUDE_PID=21630;",
+    "  - AeroSpace, SwiftBar, Hammerspoon (+ its aerospace child), limactl and an orphaned login shell were (re)started",
+    "    from that session too;",
+    "  - the bun/next dev server in pgid 7164 and the doppler/next dev server in pgid 40363 belong to dead sessions;",
+    "  - every claude sets CLAUDE_PID=<its own pid> for the processes it starts.",
+    "The agent-browser daemon and its Chrome are not in ps.txt; they are added in the shape such a daemon has on a",
+    "live system (daemon reparented to launchd with CLAUDE_PID=80876; Chrome with --remote-debugging-port=0,",
+    "--headless=new and a scratch --user-data-dir; the Chrome itself has no CLAUDE_PID).",
+    "Footprint = RSS from the capture (the fixture has no phys_footprint), so byte totals are RSS-based."
+  ],
+  "home": "/Users/jappleseed",
+  "uid": 501,
+  "baseStartSec": 1790600000,
+  "claudePath": "/Users/jappleseed/.local/share/claude/versions/2.1.283",
+  "commPaths": {
+    "-zsh": "/bin/zsh",
+    "zsh": "/bin/zsh",
+    "tmux": "/opt/homebrew/bin/tmux",
+    "bun": "/Users/jappleseed/.bun/bin/bun",
+    "node": "/opt/homebrew/bin/node",
+    "doppler": "/opt/homebrew/bin/doppler",
+    "caffeinate": "/usr/bin/caffeinate"
+  },
+  "tmuxServers": [51951],
+  "envTrees": [
+    { "root": 51951, "env": { "CLAUDE_PID": "21630" } },
+    { "root": 79165, "env": { "CLAUDE_PID": "21630" } },
+    { "root": 36302, "env": { "CLAUDE_PID": "21630" } },
+    { "root": 29487, "env": { "CLAUDE_PID": "21630" } },
+    { "root": 79599, "env": { "CLAUDE_PID": "21630" } },
+    { "root": 88624, "env": { "CLAUDE_PID": "21630" } },
+    { "root": 88642, "env": { "CLAUDE_PID": "21630" } },
+    { "root": 7167, "env": { "CLAUDE_PID": "5210", "CLAUDE_CODE_SESSION_ID": "0b7f1c52-5210-4e0e-9d1a-7164aaaa0001" } },
+    { "root": 40369, "env": { "CLAUDE_PID": "38112", "CLAUDE_CODE_SESSION_ID": "5d0c2e19-3811-4a55-8c0e-40363bbb0002" } }
+  ],
+  "claudeChildEnv": true,
+  "extraProcesses": [
+    { "pid": 85289, "ppid": 1, "pgid": 85289, "rssKB": 31000, "startOffset": 600,
+      "path": "/Users/jappleseed/.bun/install/global/node_modules/agent-browser/bin/agent-browser-darwin-arm64",
+      "argv": ["/Users/jappleseed/.bun/install/global/node_modules/agent-browser/bin/agent-browser-darwin-arm64"],
+      "env": { "CLAUDE_PID": "80876" } },
+    { "pid": 85291, "ppid": 85289, "pgid": 85291, "rssKB": 210000, "startOffset": 601,
+      "path": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+      "argv": ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "--remote-debugging-port=0",
+               "--headless=new", "--no-first-run",
+               "--user-data-dir=/var/folders/zz/zyxwvutsrqponmlkjihgfedc0000gn/T/agent-browser-chrome-2d158774"] },
+    { "pid": 85299, "ppid": 85291, "pgid": 85291, "rssKB": 60000, "startOffset": 602,
+      "path": "/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/154.0.8037.58/Helpers/Google Chrome Helper (GPU).app/Contents/MacOS/Google Chrome Helper (GPU)",
+      "argv": ["/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/154.0.8037.58/Helpers/Google Chrome Helper (GPU).app/Contents/MacOS/Google Chrome Helper (GPU)", "--type=gpu-process"] },
+    { "pid": 85303, "ppid": 85291, "pgid": 85291, "rssKB": 120000, "startOffset": 603,
+      "path": "/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/154.0.8037.58/Helpers/Google Chrome Helper (Renderer).app/Contents/MacOS/Google Chrome Helper (Renderer)",
+      "argv": ["/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/154.0.8037.58/Helpers/Google Chrome Helper (Renderer).app/Contents/MacOS/Google Chrome Helper (Renderer)", "--type=renderer", "--renderer-client-id=5"] },
+    { "pid": 85310, "ppid": 1, "pgid": 85310, "rssKB": 4000, "startOffset": 604,
+      "path": "/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/154.0.8037.58/Helpers/chrome_crashpad_handler",
+      "argv": ["/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/154.0.8037.58/Helpers/chrome_crashpad_handler", "--type=crashpad-handler",
+               "--database=/var/folders/zz/zyxwvutsrqponmlkjihgfedc0000gn/T/agent-browser-chrome-2d158774/Crashpad"] }
+  ],
+  "unregisteredClaude": [61153],
+  "staleSessions": [
+    { "pid": 21630, "startOffset": -86400, "file": "21630.json" },
+    { "pid": 74094, "startOffset": -3600, "file": "74094.json" }
+  ],
+  "hosts": []
+}

@@ -1,0 +1,6 @@
+1790771408	/dev/ttys001	oakfield-ledger
+1790787814	/dev/ttys003	quote-composer
+1790785291	/dev/ttys018	compass
+1790787903	/dev/ttys011	hub
+1790787909	/dev/ttys021	misc
+1790787895	/dev/ttys009	millrace

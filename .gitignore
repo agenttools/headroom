@@ -1,0 +1,16 @@
+.build/
+build/
+*.app
+DerivedData/
+.swiftpm/
+*.xcodeproj/
+xcuserdata/
+.DS_Store
+*.p12
+*.key.pem
+*.pem
+*.cer
+*.crt
+*.keychain
+*.keychain-db
+__pycache__/
