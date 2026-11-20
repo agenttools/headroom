@@ -300,6 +300,7 @@ import HeadroomContracts
         strip.model.chrome = world.chrome.total
         strip.model.claude = world.claude.sessionsTotal
         strip.model.leftovers = world.claude.leftoversTotal
+        strip.model.docker = world.docker.status == .running ? (world.docker.vmFootprint ?? 0) : 0
         strip.model.updated = world.at == .distantPast ? .distantPast : world.at
         strip.model.stale = world.chrome.staleSince != nil
         strip.model.mock = ctx.isMock || world.isMock

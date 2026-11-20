@@ -6,6 +6,9 @@ sessions and the dev servers that sessions left running after they ended, sorted
 You select rows and close them, and you can Undo: tabs reopen (with their history when the helper extension is
 installed), and sessions resume in a new tmux window or Rex tab, where they ran.
 
+It also shows what Docker costs, read-only: the memory of each running container, grouped by compose project,
+what the Docker VM holds on your Mac, and the disk space of images, volumes and build cache.
+
 It is a native macOS Dock app (Swift 6, AppKit, SwiftPM), a `headroom` CLI that agents can use too, and a small
 Chrome helper extension for memory per tab. It is for people who keep many Claude Code sessions open, usually in
 tmux or Rex, next to a busy Chrome.
@@ -162,6 +165,21 @@ Limits of the Rex support:
 - Headroom does not read Rex pane titles. A session in tmux without a user-set name or an AI title is titled from
   its tmux pane title; a session in Rex in that case falls back to its other names, or to its project folder.
 
+## Docker
+
+When a Docker engine runs on your Mac (colima, Docker Desktop, OrbStack, Rancher Desktop), the list ends with a
+`DOCKER` section and the memory strip gets a `Docker` segment. No setup is needed: Headroom reads the engine's
+local socket.
+
+- The section's number is what the Docker VM holds on your Mac. The rows show memory inside the VM, per container,
+  with compose projects as groups. The VM often holds more than its containers use, because it does not always
+  give memory back to macOS when a container stops; restarting the VM (for example `colima restart`) does.
+- The last line is disk use (images, build cache, volumes, container layers) and how much `docker system prune`
+  and `docker volume prune` could free. It is read in the background, so it can be a few minutes old.
+- It is read-only. You cannot select these rows, and Headroom never stops a container or prunes anything.
+- `is:container` in the filter shows only this section. In the CLI: `headroom list --kind docker`.
+- When Headroom cannot tell which process is the Docker VM, the number is the sum of the containers instead.
+
 ## Screenshots
 
 All screenshots show the built-in mock data (`--mock`), in dry run.
@@ -183,6 +201,7 @@ log and Recently Closed list, so the app can undo them.
 ```sh
 headroom list                       # table of tabs, sessions and leftovers, biggest first
 headroom list --json --kind sessions
+headroom list --kind docker         # containers by compose project, the VM's memory, disk use (--disk reads disk again)
 headroom suggest                    # rule-based close candidates + a ready-to-run close line
 headroom suggest --ask              # also asks `claude -p` for a second opinion (never closes anything)
 headroom close <id> <id> …          # shows the plan, then asks y/N; --yes skips the question
@@ -198,6 +217,7 @@ makes every close a no-op that is logged only. `--mock` uses built-in fake data.
 ## Privacy
 
 Headroom makes no network requests. The app, the CLI and the native-messaging host have no networking code.
+Docker is read through the engine's local unix socket, with read-only requests.
 The helper extension has no host permissions and no content scripts, and it passes on a tab's favicon only when
 Chrome already has it as a small `data:` URL.
 
@@ -269,7 +289,8 @@ To forget the signing identity: open Keychain Access, find "Headroom Local Signi
 | `HeadroomCore` | library | Contracts |
 | `HeadroomClaude` | library | Contracts, Core |
 | `HeadroomChrome` | library | Contracts, Core |
-| `HeadroomActions` | library | Contracts, Core, Claude, Chrome |
+| `HeadroomDocker` | library | Contracts, Core |
+| `HeadroomActions` | library | Contracts, Core, Claude, Chrome, Docker |
 | `HeadroomApp` (product `HeadroomApp`, bundled as `Headroom`) | executable | Contracts, Core, Chrome, Actions |
 | `HeadroomCLI` (product `headroom`) | executable | Contracts, Core, Actions |
 | `headroom-host` | executable | Contracts |

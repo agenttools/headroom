@@ -86,6 +86,33 @@ struct Harness {
         }
     }
 
+    @Test func listShowsDockerReadOnly() async throws {
+        let h = Harness()
+        // --kind docker: only the DOCKER section, grouped by compose project, with the disk line.
+        let (code, io) = await h.run(["list", "--kind", "docker"])
+        #expect(code == 0)
+        let out = io.stdout
+        #expect(out.contains("DOCKER  ·  colima · VM holds 4.60 GB on this Mac (limit 12.00 GB) · 7 running, 3 stopped"))
+        #expect(out.contains("  oakfield-ledger") && out.contains("    backend") && out.contains("  scratch-pg"))
+        #expect(out.contains("Disk 67.1 GB, 29.1 GB reclaimable"))
+        #expect(!out.contains("CLAUDE SESSIONS") && !out.contains("CHROME TABS"))
+        // The default list has it too, after the other sections.
+        let all = await h.run(["list"]).io.stdout
+        #expect(all.contains("CLAUDE SESSIONS") && all.contains("DOCKER  ·  colima"))
+
+        // JSON: an additive `docker` object; containers are not items (they have no closable id).
+        let (_, snap) = try await h.json(ListSnapshot.self, ["list", "--json", "--kind", "docker"])
+        #expect(snap.items.isEmpty)
+        let d = try #require(snap.docker)
+        #expect(d.status == "running" && d.runtime == "colima" && d.running == 7 && d.stopped == 3)
+        #expect(d.vmBytes == .gb(4.6) && d.containers.first?.name == "quote-composer-search-1")
+        #expect(d.disk?.images.count == 41 && d.containers.count == 7)
+        // Other kinds leave it out.
+        let (_, sessions) = try await h.json(ListSnapshot.self, ["list", "--json", "--kind", "sessions"])
+        #expect(sessions.docker == nil)
+        #expect(await h.run(["close", "container:\(String(d.containers[0].id.prefix(12)))"]).code == 1)
+    }
+
     @Test func closeRejectsMalformedIdWithExitOne() async {
         let (code, io) = await Harness().run(["close", "tab:812"])
         #expect(code == 1)

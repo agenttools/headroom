@@ -424,8 +424,10 @@ final class FlippedClip: NSClipView {
         case .perTabUnavailable: symbol = "info.circle"
         case .helperBlind: symbol = "eye.slash"; color = .systemOrange
         case .waitingForHelper: symbol = "hourglass"
+        case .dockerDisk: symbol = "internaldrive"
         default: symbol = "info.circle"
         }
+        toolTip = row.tooltip
         views.append(NSImageView(image: Theme.symbol(symbol, size: 11, color: color) ?? NSImage()))
         views.append(NSTextField.label(row.title, font: Theme.small, color: color))
         switch row.note {

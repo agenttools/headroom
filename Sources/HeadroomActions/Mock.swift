@@ -40,7 +40,8 @@ public struct MockWorldProvider: WorldProvider {
             c.tabs[i].display = Bytes.mb(Double.random(in: 40...900))
         }
         return WorldSnapshot(system: w.system, chrome: c, claude: w.claude, ownership: w.ownership,
-                             selfBytes: w.selfBytes, helperBytes: w.helperBytes, at: w.at, isMock: true)
+                             selfBytes: w.selfBytes, helperBytes: w.helperBytes, at: w.at, isMock: true,
+                             docker: w.docker)
     }
 
     public func snapshot() async -> WorldSnapshot {
@@ -59,7 +60,8 @@ public struct MockWorldProvider: WorldProvider {
         claude.sessions.removeAll { gone.contains($0.itemID) }
         claude.leftovers.removeAll { gone.contains($0.id) }
         return WorldSnapshot(system: w.system, chrome: chrome, claude: claude, ownership: w.ownership,
-                             selfBytes: w.selfBytes, helperBytes: w.helperBytes, at: w.at, isMock: true)
+                             selfBytes: w.selfBytes, helperBytes: w.helperBytes, at: w.at, isMock: true,
+                             docker: w.docker)
     }
 }
 
@@ -84,7 +86,7 @@ extension MockWorldProvider {
         }
         return WorldSnapshot(system: w.system, chrome: c, claude: w.claude, ownership: w.ownership,
                              selfBytes: w.selfBytes, helperBytes: mode == "helper" ? w.helperBytes : nil, at: w.at,
-                             isMock: true)
+                             isMock: true, docker: w.docker)
     }
 }
 

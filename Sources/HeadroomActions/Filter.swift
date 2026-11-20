@@ -6,7 +6,7 @@
 //   >500mb  <100mb     memory above / below (kb, mb, gb; a bare number means MB)
 //   idle>2h  idle<10m  idle longer / shorter than (s, m, h, d)
 //   busy               busy sessions
-//   is:tab|session|leftover
+//   is:tab|session|leftover|container   (is:docker = is:container; Docker rows are read-only)
 //   site:<host>        tabs on that host (suffix match, so site:google.com matches mail.google.com)
 //   tmux:<session>     sessions in that tmux session
 //   rex:<session>      sessions in that Rex session (label, prefix match)
@@ -50,6 +50,13 @@ public struct FilterSubject: Sendable, Hashable {
         self.init(kind: .tab, haystack: [t.title, t.url, t.host], bytes: t.display,
                   idle: t.active ? 0 : t.lastAccessed.map { now.timeIntervalSince($0) }, host: t.host,
                   shared: t.sharedWith > 0, sleeping: t.discarded)
+    }
+
+    /// A Docker container: matched on its names, image, compose project and the runtime ("colima").
+    public init(container c: DockerContainer, runtime: String) {
+        self.init(kind: .container,
+                  haystack: [c.name, c.image, c.id, c.project ?? "", c.service ?? "", runtime, "docker"],
+                  bytes: c.memory)
     }
 
     public init(session s: ClaudeSession, now: Date) {
@@ -148,6 +155,7 @@ public struct FilterQuery: Sendable, Hashable {
             case "tab", "tabs": return .kind(.tab)
             case "session", "sessions": return .kind(.session)
             case "leftover", "leftovers": return .kind(.leftover)
+            case "container", "containers", "docker": return .kind(.container)
             default: break
             }
         }

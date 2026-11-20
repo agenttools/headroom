@@ -13,6 +13,7 @@ import HeadroomContracts
 import HeadroomCore
 import HeadroomClaude
 import HeadroomChrome
+import HeadroomDocker
 
 public enum Headroom {
     /// Live or mock, chosen by HEADROOM_MOCK.
@@ -45,6 +46,8 @@ public final class LiveServices: Sendable {
     public let rex: RexClient
     public let claude: ClaudeSource
     public let chrome: ChromeSource
+    /// Docker containers, VM and disk use (read-only).
+    public let docker: DockerSource
     public let world: LiveWorld
     public let executor: LiveExecutor
 
@@ -55,7 +58,8 @@ public final class LiveServices: Sendable {
         rex = RexClient(env: env)
         claude = ClaudeSource(env: env, tmux: tmux, rex: rex)
         chrome = ChromeSource(env: env)
-        world = LiveWorld(env: env, sys: sys, tmux: tmux, claude: claude, chrome: chrome)
+        docker = DockerSource(env: env)
+        world = LiveWorld(env: env, sys: sys, tmux: tmux, claude: claude, chrome: chrome, docker: docker)
         executor = LiveExecutor(env: env, sys: sys, tmux: tmux, claude: claude, chrome: chrome)
     }
 }
@@ -114,6 +118,9 @@ public struct LiveWorld: WorldProvider {
     public let tmux: TmuxClient
     public let claude: ClaudeSource
     public let chrome: ChromeSource
+    /// Never waited for in snapshot(): it answers from its last background read (the CLI calls docker.refresh()).
+    /// nil for the close-time recheck world, which has no use for Docker.
+    public var docker: DockerSource? = nil
     public let tmuxCache = TmuxStateCache()
     public let rexCache = RexStateCache()
 
@@ -126,6 +133,7 @@ public struct LiveWorld: WorldProvider {
         tmuxCache.setTTL(windowKey ? 3 : 10)
         rexCache.setTTL(windowKey ? 3 : 10)
         chrome.setCadence(windowKey: windowKey)
+        docker?.setCadence(windowKey: windowKey)
     }
 
     public func snapshot() async -> WorldSnapshot {
@@ -151,7 +159,7 @@ public struct LiveWorld: WorldProvider {
         let chromeResult = await chromeSnap
         return WorldSnapshot(system: sys.systemMemory(), chrome: chromeResult, claude: await claudeSnap,
                              ownership: ownership, selfBytes: selfBytes, helperBytes: chromeResult.helperBytes,
-                             at: Date())
+                             at: Date(), docker: docker?.snapshot(table) ?? .empty)
     }
 }
 

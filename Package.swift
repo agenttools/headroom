@@ -2,7 +2,7 @@
 //
 // Headroom — dependency direction (enforced by the target graph below):
 //
-//   HeadroomContracts  <-  HeadroomCore  <-  { HeadroomClaude, HeadroomChrome }  <-  HeadroomActions  <-  { HeadroomApp, HeadroomCLI }
+//   HeadroomContracts  <-  HeadroomCore  <-  { HeadroomClaude, HeadroomChrome, HeadroomDocker }  <-  HeadroomActions  <-  { HeadroomApp, HeadroomCLI }
 //   headroom-host depends only on HeadroomContracts (Foundation-only wire types).
 //
 // Product names:
@@ -32,9 +32,12 @@ let package = Package(
         .target(name: "HeadroomClaude", dependencies: ["HeadroomContracts", "HeadroomCore"]),
         // ChromeBridge, Attribution, JXAFallback, ChromeSource.
         .target(name: "HeadroomChrome", dependencies: ["HeadroomContracts", "HeadroomCore"]),
+        // DockerSource: containers, VM footprint and disk use, read from the engine's socket (read-only).
+        .target(name: "HeadroomDocker", dependencies: ["HeadroomContracts", "HeadroomCore"]),
         // Planner, CloseCoordinator, Signaller, Journal, Undo, composition (Headroom.live()/mock()).
         .target(name: "HeadroomActions",
-                dependencies: ["HeadroomContracts", "HeadroomCore", "HeadroomClaude", "HeadroomChrome"]),
+                dependencies: ["HeadroomContracts", "HeadroomCore", "HeadroomClaude", "HeadroomChrome",
+                               "HeadroomDocker"]),
         // The AppKit app.
         .executableTarget(name: "HeadroomApp",
                           dependencies: ["HeadroomContracts", "HeadroomCore", "HeadroomChrome", "HeadroomActions"]),
@@ -48,6 +51,7 @@ let package = Package(
         .testTarget(name: "HeadroomCoreTests", dependencies: ["HeadroomCore", "HeadroomContracts"]),
         .testTarget(name: "HeadroomClaudeTests", dependencies: ["HeadroomClaude", "HeadroomContracts"]),
         .testTarget(name: "HeadroomChromeTests", dependencies: ["HeadroomChrome", "HeadroomCore", "HeadroomContracts"]),
+        .testTarget(name: "HeadroomDockerTests", dependencies: ["HeadroomDocker", "HeadroomContracts"]),
         .testTarget(name: "HeadroomActionsTests", dependencies: ["HeadroomActions", "HeadroomContracts"]),
         .testTarget(name: "HeadroomCLITests", dependencies: ["HeadroomCLI", "HeadroomActions", "HeadroomContracts"]),
         .testTarget(name: "HeadroomHostTests", dependencies: ["headroom-host", "HeadroomContracts"]),

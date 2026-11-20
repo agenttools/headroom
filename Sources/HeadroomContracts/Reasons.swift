@@ -59,6 +59,14 @@ public enum ByteFormat {
         if mb < 1024 { return "\(Int(mb.rounded())) MB" }
         return String(format: "%.2f GB", mb / 1024)
     }
+
+    /// Disk sizes in decimal units, as `docker system df` and Finder show them: "419 MB", "66.9 GB".
+    public static func disk(_ b: Bytes) -> String {
+        let mb = Double(b) / 1_000_000
+        if mb < 1 { return b == 0 ? "0 MB" : "<1 MB" }
+        if mb < 1000 { return "\(Int(mb.rounded())) MB" }
+        return String(format: "%.1f GB", mb / 1000)
+    }
 }
 
 public extension Bytes {

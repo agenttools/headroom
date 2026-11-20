@@ -8,6 +8,7 @@ import HeadroomContracts
     static let chrome = NSColor.systemBlue
     static let claude = NSColor.systemPurple
     static let leftovers = NSColor.systemOrange
+    static let docker = NSColor.systemTeal
     static let other = NSColor.systemGray.withAlphaComponent(0.55)
     static let system = NSColor.systemGray.withAlphaComponent(0.85)
     static let free = NSColor.quaternaryLabelColor
@@ -72,6 +73,7 @@ import HeadroomContracts
         case .session: symbol("terminal", size: 11, color: r.isLocked ? .tertiaryLabelColor : .secondaryLabelColor)
         case .process: symbol(r.glyphs.contains(.automation) ? "globe" : "gearshape", size: 11, color: .tertiaryLabelColor)
         case .leftover: symbol("gearshape.2", size: 11, color: .systemOrange)
+        case .container: symbol("shippingbox", size: 11, color: .secondaryLabelColor)
         case .subgroup: symbol("rectangle.split.3x1", size: 11, color: .secondaryLabelColor)
         default: nil
         }

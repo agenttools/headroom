@@ -12,6 +12,8 @@ import HeadroomContracts
         var chrome: Bytes = 0
         var claude: Bytes = 0
         var leftovers: Bytes = 0
+        /// The Docker VM's footprint on this Mac (0 when there is none or it cannot be identified).
+        var docker: Bytes = 0
         var freesChrome: Bytes = 0
         var freesClaude: Bytes = 0
         var freesLeftovers: Bytes = 0
@@ -131,6 +133,7 @@ import HeadroomContracts
         item(Theme.chrome, "■", "Chrome \(Self.gb(m.chrome))")
         item(Theme.claude, "■", "Claude \(Self.gb(m.claude))")
         item(Theme.leftovers, "■", "Leftovers \(Self.gb(m.leftovers))")
+        if m.docker > 0 { item(Theme.docker, "■", "Docker \(Self.gb(m.docker))") }
         if m.frees > 0 { item(.labelColor, "▨", "selection frees ≈\(Self.gb(m.frees))") }
         item(Theme.other, "■", "Other \(Self.gb(p.other))")
         item(Theme.system, "■", "System \(Self.gb(p.system))")
@@ -168,7 +171,7 @@ import HeadroomContracts
     var model = StripView.Model() { didSet { needsDisplay = true } }
 
     struct Parts {
-        var chrome, claude, leftovers, other, system, free: Bytes
+        var chrome, claude, leftovers, docker, other, system, free: Bytes
         /// Section footprints are scaled by this to fit the RAM in use (1 = no scaling).
         var scale: Double
         /// Σ section footprints − (used − wired) when positive: footprints count compressed pages at full
@@ -176,22 +179,24 @@ import HeadroomContracts
         var excess: Bytes
     }
 
-    /// Footprints (Chrome, Claude, Leftovers) and `used` are different units: footprint counts compressed
+    /// Footprints (Chrome, Claude, Leftovers, the Docker VM) and `used` are different units: footprint counts compressed
     /// pages uncompressed plus swap. When the footprints exceed the RAM in use (minus wired), they are scaled
     /// down so the bar ends at `used` and never overflows; the legend says so.
     static func parts(_ m: StripView.Model) -> Parts {
         let s = m.system
         let systemBytes = s.wired
         let room = s.used > systemBytes ? s.used - systemBytes : 0
-        let known = m.chrome + m.claude + m.leftovers
+        let known = m.chrome + m.claude + m.leftovers + m.docker
         let free = s.total > s.used ? s.total - s.used : 0
         if known > room && known > 0 {
             let scale = Double(room) / Double(known)
             func sc(_ b: Bytes) -> Bytes { Bytes(Double(b) * scale) }
-            return Parts(chrome: sc(m.chrome), claude: sc(m.claude), leftovers: sc(m.leftovers), other: 0,
+            return Parts(chrome: sc(m.chrome), claude: sc(m.claude), leftovers: sc(m.leftovers),
+                         docker: sc(m.docker), other: 0,
                          system: systemBytes, free: free, scale: scale, excess: known - room)
         }
-        return Parts(chrome: m.chrome, claude: m.claude, leftovers: m.leftovers, other: room - known,
+        return Parts(chrome: m.chrome, claude: m.claude, leftovers: m.leftovers, docker: m.docker,
+                     other: room - known,
                      system: systemBytes, free: free, scale: 1, excess: 0)
     }
 
@@ -203,7 +208,8 @@ import HeadroomContracts
         func sc(_ b: Bytes) -> Bytes { Bytes(Double(b) * p.scale) }
         let segs: [(Bytes, NSColor, Bytes)] = [
             (p.chrome, Theme.chrome, sc(m.freesChrome)), (p.claude, Theme.claude, sc(m.freesClaude)),
-            (p.leftovers, Theme.leftovers, sc(m.freesLeftovers)), (p.other, Theme.other, 0),
+            (p.leftovers, Theme.leftovers, sc(m.freesLeftovers)), (p.docker, Theme.docker, 0),
+            (p.other, Theme.other, 0),
             (p.system, Theme.system, 0), (p.free, Theme.free, 0),
         ]
         NSGraphicsContext.saveGraphicsState()

@@ -13,7 +13,7 @@ enum HeadroomCLI {
     static let usage = """
     usage: headroom [--mock] <command> [options]
 
-      list     [--json] [--kind tabs|sessions|leftovers|all]
+      list     [--json] [--kind tabs|sessions|leftovers|docker|all] [--disk]
                Chrome tabs, Claude sessions and leftovers by memory, with stable ids.
       suggest  [--json] [--min-mb N] [--ask [--model M] [--timeout S]]
                Close candidates from the rules (instant); --ask also asks `claude -p` (never closes anything).
@@ -43,8 +43,8 @@ enum HeadroomCLI {
         do throws(CLIError) {
             switch cmd {
             case "list":
-                let a = try ParsedArgs.parse(rest, flags: ["json"], options: ["kind"])
-                try noPositionals(a, "list", hint: "use --kind tabs|sessions|leftovers")
+                let a = try ParsedArgs.parse(rest, flags: ["json", "disk"], options: ["kind"])
+                try noPositionals(a, "list", hint: "use --kind tabs|sessions|leftovers|docker")
                 return await list(a, makeContext(env), io)
             case "suggest":
                 let a = try ParsedArgs.parse(rest, flags: ["json", "ask"], options: ["min-mb", "model", "timeout"])
@@ -87,10 +87,22 @@ enum HeadroomCLI {
         var kind = ListKind.all
         if let k = a.options["kind"] {
             guard let v = ListKind(rawValue: k) else {
-                io.err("headroom list: --kind must be tabs, sessions, leftovers or all")
+                io.err("headroom list: --kind must be tabs, sessions, leftovers, docker or all")
                 return Exit.error
             }
             kind = v
+        }
+        // Docker is read in the background in the app; the CLI takes one snapshot, so it reads Docker first
+        // (about a second when Docker runs, nothing when it does not). --disk also reads disk use, which is slow.
+        if kind.includes(.container), let docker = (ctx.world as? LiveWorld)?.docker {
+            if a.has("disk") {
+                if !a.has("json") { io.err("Reading Docker disk use (this can take a minute)…") }
+                async let disk = docker.refreshDisk()
+                await docker.refresh()
+                _ = await disk
+            } else {
+                await docker.refresh()
+            }
         }
         let world = await ctx.world.snapshot()
         let snap = ListSnapshot(world: world, protections: ctx.executor.protections(world), kind: kind,
@@ -136,7 +148,8 @@ enum HeadroomCLI {
             io.err("headroom suggest --ask: `claude` not found on PATH (set HEADROOM_ASK_CLAUDE to its path)")
             return Exit.error
         }
-        let list = ListSnapshot(world: world, protections: prot, kind: .all, dryRun: ctx.env.dryRun, now: now)
+        var list = ListSnapshot(world: world, protections: prot, kind: .all, dryRun: ctx.env.dryRun, now: now)
+        list.docker = nil       // Headroom cannot close containers, so Claude is not asked about them
         let git = ctx.isMock ? [:] : await AskClaude.gitState(world)
         let asker = AskClaude(claudePath: claude, model: a.options["model"], timeout: timeout)
         if !a.has("json") { io.err("Asking claude -p (up to \(Int(timeout)) s; nothing will be closed)…") }

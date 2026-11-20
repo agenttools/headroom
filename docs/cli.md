@@ -10,7 +10,7 @@ the CLI (`CloseCommand.swift`, `UndoCommand.swift`). For all of them: fields can
 removed. `schema` changes only on a breaking change. It is `1` now.
 
 ```
-headroom [--mock] list     [--json] [--kind tabs|sessions|leftovers|all]
+headroom [--mock] list     [--json] [--kind tabs|sessions|leftovers|docker|all] [--disk]
 headroom [--mock] suggest  [--json] [--min-mb N] [--ask [--model M] [--timeout S]]
 headroom [--mock] close    <ids…> [--dry-run] [--yes] [--force-confirm [--include-busy]] [--keep-background] [--json]
 headroom [--mock] undo     [--last | <id>] [--list] [--dry-run] [--json]
@@ -36,6 +36,7 @@ headroom          --version | --help
 | `HEADROOM_CLAUDE_DIR`, `HEADROOM_TMUX`, `HEADROOM_TMUX_SOCKET`, `HEADROOM_CLAUDE_VERSIONS_GLOB` | Test seams shared with the app (see `Env.swift`). |
 | `HEADROOM_REX` | Path of the `rex` CLI. The default is `~/.local/bin/rex`; when `HOME` is your account's home, also the CLI inside `/Applications/Rex.app` or `/Applications/Rex Beta.app`. Tests use a fake script here. |
 | `HEADROOM_REX_SERVER` | A private Rex server, as `unix:///<absolute path>` (tests). Every rex call gets `-S <address>`; any other form makes every rex call refuse. Without it, rex uses your own server. Headroom never starts a Rex server either way (`--autostart=false`). |
+| `HEADROOM_DOCKER_SOCKET` | The Docker engine's unix socket. The default is the one the `docker` CLI would use (`DOCKER_HOST`, the current context, then the usual socket of colima, Docker Desktop, OrbStack or Rancher Desktop). `off` turns Docker off. |
 | `HEADROOM_ASK_CLAUDE` | Path of the `claude` binary for `suggest --ask`. The default is `claude` on `PATH`, then `~/.local/bin`, `~/.claude/local`, `/opt/homebrew/bin` and `/usr/local/bin`. Tests use a fake script here. |
 | `CLAUDE_PID` | Set by Claude Code. The session that ran `headroom` is locked (`launcher`), as are Headroom's own ancestors. |
 
@@ -60,6 +61,41 @@ after a restart the old id is "not found" and `close` refuses it.
 This command prints system memory (pressure, swap), then the Chrome tabs, Claude sessions and leftovers, largest first.
 
 The human table has these columns: id, memory, idle time, status, protection, title and where. Where is the host for a tab and the cwd for a leftover. For a session it is `session:window.pane` in tmux (`hub:5.0`), `rex session:tab.pane` in Rex (`rex foundry:2.1`) or `not in tmux or Rex`, then the cwd. The protection reason codes are in parentheses. `—` means unknown. For example, per-tab memory is unknown when Chrome is read through AppleScript instead of the helper extension.
+
+### Docker
+
+When a Docker engine runs on this Mac, `list` ends with a `DOCKER` section, and `--kind docker` prints only that.
+It is read-only: Headroom cannot stop a container, and containers have no item id.
+
+```
+DOCKER  ·  colima · VM holds 4.60 GB on this Mac (limit 12.00 GB) · 7 running, 3 stopped · containers use 3.21 GB inside the VM
+  PROJECT / CONTAINER                           MEM  STATUS                   IMAGE
+  quote-composer                            1.83 GB  2 containers
+    search                                  1.39 GB  Up 30 hours              opensearch:3
+    api                                      455 MB  Up 30 hours              quote-composer-api:latest
+  scratch-pg                                  96 MB  Up 5 days                postgres:17
+  Disk 67.1 GB, 29.1 GB reclaimable · images 41.2 GB · build cache 15.2 GB · volumes 10.3 GB · containers 325 MB · read 7m ago (--disk reads it again)
+```
+
+- `VM holds` is the footprint of the Docker VM's processes on the Mac. Container memory is memory inside the VM
+  (what `docker stats` shows). The VM can hold more than its containers use, because it does not always give
+  memory back when a container stops. The part is left out when Headroom cannot tell which process is the VM.
+- Compose projects group their containers. Stopped containers use no memory and are only counted.
+- Disk use is slow to read (tens of seconds), so the app reads it in the background and saves it; the CLI prints
+  the saved numbers with their age. `--disk` reads it again and waits. Disk sizes are decimal, as in `docker system df`.
+- Reading Docker adds under a second to `list`, and nothing when no engine runs.
+
+In `list --json`, the same data is the `docker` object (omitted when there is no Docker socket, and for the
+kinds `tabs`, `sessions` and `leftovers`):
+
+| Key | Meaning |
+|---|---|
+| `status` | `running` \| `notRunning` |
+| `runtime` | `colima`, `Docker Desktop`, `OrbStack`, `Rancher Desktop`, `lima`, `podman` or `Docker` |
+| `vmBytes`, `vmLimitBytes`, `cpus` | The VM's footprint on the Mac (omitted when not identified), the memory it may use, and its CPUs |
+| `containersBytes`, `running`, `stopped`, `images` | Σ container memory inside the VM, and counts |
+| `containers[]` | Running containers, largest first: `id` (the full container id), `name`, `image`, `project`, `service`, `state`, `status`, `bytes`, `limitBytes` (only a limit of its own), `pids`, `createdAt`. `cpuPercent` is omitted by the CLI, which takes one sample. |
+| `disk` | `totalBytes`, `reclaimableBytes`, `readAt`, and `images`, `containers`, `volumes`, `buildCache`, each with `count`, `bytes`, `reclaimableBytes`. Omitted until it was read once. |
 
 ### `list --json`
 

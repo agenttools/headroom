@@ -30,7 +30,7 @@ public struct ListOptions: Sendable, Hashable, Codable {
     }
 }
 
-public enum ListSection: String, Sendable, CaseIterable, Codable { case chrome, claude, leftovers }
+public enum ListSection: String, Sendable, CaseIterable, Codable { case chrome, claude, leftovers, docker }
 
 public enum RowKind: String, Sendable, Codable {
     /// CHROME / CLAUDE CODE / LEFTOVERS: floating group rows, never selectable.
@@ -38,6 +38,8 @@ public enum RowKind: String, Sendable, Codable {
     /// tmux or Rex session grouping header inside CLAUDE CODE (not selectable).
     case subgroup
     case window, tab, chromeItself, overhead, session, process, leftover
+    /// A Docker container (read-only: never selectable). Compose projects are `.subgroup` rows.
+    case container
     /// The first-run Chrome card (§8.6).
     case card
     /// An inline empty/error state (§6.1).
@@ -62,6 +64,10 @@ public enum NoteKind: Sendable, Hashable {
     case noSessions
     case noLeftovers
     case noMatches
+    /// DOCKER: the VM is up with no container running.
+    case dockerIdle
+    /// DOCKER: disk use by images, volumes, build cache and container layers.
+    case dockerDisk
 }
 
 public struct Row: Sendable, Identifiable {
@@ -159,6 +165,7 @@ public enum ListModel {
             if shows(.session) { out.append(claudeSection(w, protections, o, query, now)) }
             if shows(.leftover), let l = leftoversSection(w, protections, o, query, now) { out.append(l) }
         }
+        if o.scope == .all, shows(.container), let d = dockerSection(w, query, now) { out.append(d) }
         out = out.map { sortTree($0, o) }
         return out.map(assignBrackets)
     }
@@ -476,6 +483,92 @@ public enum ListModel {
         return r
     }
 
+    // MARK: Docker
+
+    /// DOCKER (SPEC §5.2): read-only. Shown while the engine answers. The section's number is what the VM holds
+    /// on this Mac; container rows show memory inside the VM. Compose projects are subgroups.
+    static func dockerSection(_ w: WorldSnapshot, _ q: FilterQuery, _ now: Date) -> Row? {
+        let d = w.docker
+        guard d.status == .running else { return nil }
+        func matches(_ c: DockerContainer) -> Bool {
+            q.isEmpty || q.matches(FilterSubject(container: c, runtime: d.runtime))
+        }
+        var rows: [Row] = []
+        var shown = 0
+        for p in d.projects {
+            let cs = p.containers.filter(matches)
+            if cs.isEmpty { continue }
+            shown += cs.count
+            let children = cs.map { containerRow($0, d, now) }
+            guard let name = p.name else { rows += children; continue }
+            var g = Row(id: "docker:project:\(name)", item: nil, kind: .subgroup, section: .docker, title: name,
+                        badge: Fmt.plural(cs.count, "container"),
+                        bytes: cs.reduce(0) { $0 + ($1.memory ?? 0) }, children: children, selectable: false)
+            g.cpu = cs.compactMap(\.cpuPercent).reduce(0, +)
+            g.tooltip = "Compose project \(name)"
+            rows.append(g)
+        }
+        if !q.isEmpty && shown == 0 { return nil }
+        if d.containers.isEmpty {
+            rows.append(note(.dockerIdle, .docker, "No containers are running, but the \(d.runtime) VM is up"
+                             + (d.vmFootprint.map { " and holds \(ByteFormat.short($0))" } ?? "")))
+        }
+        // The disk line stays with `is:container` alone; any narrower filter is about containers, so it goes.
+        let kindOnly = q.tokens.allSatisfy { if case .kind = $0 { true } else { false } }
+        if kindOnly, let disk = d.disk {
+            var r = note(.dockerDisk, .docker, dockerDiskText(disk, now))
+            r.pinRank = 5
+            r.tooltip = "Disk space inside the Docker VM, as `docker system df` reports it.\n"
+                + "Reclaimable: what `docker system prune` (images, containers, build cache) and "
+                + "`docker volume prune` could free. Headroom does not prune anything."
+            rows.append(r)
+        }
+        var parts = [d.runtime, Fmt.plural(d.containers.count, "container") + " running"]
+        if d.stoppedCount > 0 { parts.append("\(d.stoppedCount) stopped") }
+        if !d.containers.isEmpty {
+            parts.append("containers use \(ByteFormat.short(d.containersMemory))"
+                         + (d.vmMemoryLimit.map { " of the VM's \(ByteFormat.short($0))" } ?? ""))
+        }
+        var s = Row(id: "section:docker", item: nil, kind: .section, section: .docker, title: "DOCKER",
+                    badge: parts.joined(separator: " · "), bytes: d.macBytes, children: rows, selectable: false)
+        s.tooltip = d.vmFootprint != nil
+            ? "The number is what the Docker VM holds on this Mac. Rows show memory inside the VM. "
+              + "The VM does not always give memory back to macOS when a container stops."
+            : "Headroom could not tell which process is the Docker VM, so the number is the containers' sum."
+        return s
+    }
+
+    static func containerRow(_ c: DockerContainer, _ d: DockerSnapshot, _ now: Date) -> Row {
+        var r = Row(id: "container:\(c.shortId)", item: nil, kind: .container, section: .docker, title: c.displayName,
+                    location: c.image, state: c.status.isEmpty ? c.state : c.status,
+                    tone: c.state == "running" ? .plain : .idle, bytes: c.memory, selectable: false)
+        r.subject = FilterSubject(container: c, runtime: d.runtime)
+        r.started = c.createdAt
+        r.cpu = c.cpuPercent
+        var tip = ["\(c.name) (\(c.shortId))", c.image]
+        if let m = c.memory {
+            tip.append("Memory \(ByteFormat.short(m))" + (c.memoryLimit.map { " of a \(ByteFormat.short($0)) limit" } ?? ""))
+        }
+        if let cpu = c.cpuPercent { tip.append(String(format: "CPU %.1f%%", cpu)) }
+        if let p = c.pids { tip.append(Fmt.plural(p, "process", "processes")) }
+        r.tooltip = tip.joined(separator: "\n")
+        return r
+    }
+
+    /// "Disk 107 GB, 46.7 GB reclaimable · images 66.9 GB · build cache 24.9 GB · volumes 15.0 GB ·
+    /// containers 419 MB · read 7m ago"
+    public static func dockerDiskText(_ k: DockerDisk, _ now: Date) -> String {
+        var parts = ["Disk \(ByteFormat.disk(k.total))"
+                         + (k.reclaimable > 0 ? ", \(ByteFormat.disk(k.reclaimable)) reclaimable" : ""),
+                     "images \(ByteFormat.disk(k.images.size))",
+                     "build cache \(ByteFormat.disk(k.buildCache.size))",
+                     "volumes \(ByteFormat.disk(k.volumes.size))",
+                     "containers \(ByteFormat.disk(k.containers.size))"]
+        let age = now.timeIntervalSince(k.at)
+        if age >= 120 { parts.append("read \(Fmt.age(age)) ago") }
+        return parts.joined(separator: " · ")
+    }
+
     static func note(_ k: NoteKind, _ s: ListSection, _ text: String) -> Row {
         let key: String
         switch k {
@@ -487,6 +580,8 @@ public enum ListModel {
         case .noSessions: key = "noSessions"
         case .noLeftovers: key = "noLeftovers"
         case .noMatches: key = "noMatches"
+        case .dockerIdle: key = "dockerIdle"
+        case .dockerDisk: key = "dockerDisk"
         }
         var r = Row(id: "note:\(s.rawValue):\(key)", item: nil, kind: .note, section: s, title: text,
                     tone: .muted, selectable: false, pinRank: -5)

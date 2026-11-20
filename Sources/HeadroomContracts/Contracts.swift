@@ -216,6 +216,8 @@ public enum ItemID: Hashable, Sendable {
 
 public enum ItemKind: String, Sendable, Codable, CaseIterable {
     case window, tab, overhead, process, session, leftover
+    /// A Docker container: shown and filtered (`is:container`), never selected or closed (it has no ItemID).
+    case container
 }
 
 // MARK: - Chrome
@@ -625,10 +627,14 @@ public struct WorldSnapshot: Sendable, Codable {
     public let helperBytes: Bytes?
     public let at: Date
     public let isMock: Bool
+    /// Docker containers, VM and disk use (read-only; `.empty` when there is no Docker). See Docker.swift.
+    public let docker: DockerSnapshot
     public init(system: SystemMemory, chrome: ChromeSnapshot, claude: ClaudeSnapshot, ownership: OwnershipMap,
-                selfBytes: Bytes, helperBytes: Bytes? = nil, at: Date, isMock: Bool = false) {
+                selfBytes: Bytes, helperBytes: Bytes? = nil, at: Date, isMock: Bool = false,
+                docker: DockerSnapshot = .empty) {
         self.system = system; self.chrome = chrome; self.claude = claude; self.ownership = ownership
         self.selfBytes = selfBytes; self.helperBytes = helperBytes; self.at = at; self.isMock = isMock
+        self.docker = docker
     }
     public static let empty = WorldSnapshot(system: .zero, chrome: .notRunning, claude: .empty,
                                             ownership: .empty, selfBytes: 0, at: .distantPast)

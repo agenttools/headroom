@@ -37,7 +37,41 @@ public enum MockWorld {
             total: .gb(48), used: .gb(39.8), appMemory: .gb(30.5), wired: .gb(3.2), compressed: .gb(6.1),
             free: .gb(8.2), swapUsed: .gb(3.0), swapTotal: .gb(4.0), pressure: .warning)
         return WorldSnapshot(system: system, chrome: chrome, claude: claude, ownership: ownership,
-                             selfBytes: .mb(31), helperBytes: .mb(24), at: now, isMock: true)
+                             selfBytes: .mb(31), helperBytes: .mb(24), at: now, isMock: true,
+                             docker: makeDocker(now: now))
+    }
+
+    // MARK: Docker
+
+    /// A colima VM with two compose projects and one container started by hand; 3 stopped containers.
+    public static func makeDocker(now: Date) -> DockerSnapshot {
+        func c(_ n: Int, _ name: String, _ image: String, _ project: String?, _ service: String?, mb: Double,
+               cpu: Double, hours: Double, status: String? = nil) -> DockerContainer {
+            DockerContainer(id: String(format: "%064x", 0xd0c0_0000 + n), name: name, image: image,
+                            status: status ?? (hours >= 48 ? "Up \(Int(hours / 24)) days" : "Up \(Int(hours)) hours"),
+                            project: project, service: service,
+                            createdAt: now.addingTimeInterval(-hours * 3600), memory: .mb(mb),
+                            memoryLimit: .gb(12), cpuPercent: cpu, pids: 8 + n * 3)
+        }
+        let containers = [
+            c(1, "oakfield-ledger-backend-1", "oakfield-backend:dev", "oakfield-ledger", "backend", mb: 612, cpu: 14.2, hours: 5),
+            c(2, "oakfield-ledger-db-1", "postgres:17", "oakfield-ledger", "db", mb: 284, cpu: 0.6, hours: 5,
+              status: "Up 5 hours (healthy)"),
+            c(3, "oakfield-ledger-worker-1", "oakfield-backend:dev", "oakfield-ledger", "worker", mb: 398, cpu: 2.1, hours: 5),
+            c(4, "oakfield-ledger-redis-1", "redis:8-alpine", "oakfield-ledger", "redis", mb: 18, cpu: 0.2, hours: 5),
+            c(5, "quote-composer-api-1", "quote-composer-api:latest", "quote-composer", "api", mb: 455, cpu: 0.9, hours: 30),
+            c(6, "quote-composer-search-1", "opensearch:3", "quote-composer", "search", mb: 1_420, cpu: 3.4, hours: 30),
+            c(7, "scratch-pg", "postgres:17", nil, nil, mb: 96, cpu: 0.0, hours: 122),
+        ]
+        let disk = DockerDisk(
+            images: DockerDiskStat(count: 41, size: .gb(38.4), reclaimable: .gb(12.9)),
+            containers: DockerDiskStat(count: 10, size: .mb(310), reclaimable: .mb(120)),
+            volumes: DockerDiskStat(count: 23, size: .gb(9.6), reclaimable: .gb(3.1)),
+            buildCache: DockerDiskStat(count: 180, size: .gb(14.2), reclaimable: .gb(11.0)),
+            at: now.addingTimeInterval(-420))
+        return DockerSnapshot(status: .running, runtime: "colima", socketPath: "/Users/jappleseed/.colima/default/docker.sock",
+                              containers: containers, stoppedCount: 3, imageCount: 41, vmPids: [70210],
+                              vmFootprint: .gb(4.6), vmMemoryLimit: .gb(12), cpus: 4, disk: disk, at: now)
     }
 
     // MARK: Chrome

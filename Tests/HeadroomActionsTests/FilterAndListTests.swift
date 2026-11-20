@@ -59,7 +59,7 @@ import HeadroomContracts
 
     @Test func sectionsAndGroupRows() {
         let rows = ListModel.build(world, protections: prot, options: ListOptions(), now: now)
-        #expect(rows.map(\.title) == ["CHROME", "CLAUDE CODE", "LEFTOVERS"])
+        #expect(rows.map(\.title) == ["CHROME", "CLAUDE CODE", "LEFTOVERS", "DOCKER"])
         #expect(rows.allSatisfy { !$0.selectable && $0.kind == .section })
         let chrome = rows[0]
         #expect(chrome.bytes == world.chrome.total)
@@ -129,7 +129,7 @@ import HeadroomContracts
         claude.sessions[i] = ClaudeSession(key: s.key, sessionId: s.sessionId, cwd: s.cwd, title: s.title, project: s.project,
                                            startedAt: s.startedAt, tmux: s.tmux, selfFootprint: .gb(9))
         let w2 = WorldSnapshot(system: world.system, chrome: world.chrome, claude: claude, ownership: world.ownership,
-                               selfBytes: 0, at: now)
+                               selfBytes: 0, at: now, docker: world.docker)
         let fresh = ListModel.build(w2, protections: prot, options: o, now: now)
         #expect(fresh[1].children.first?.id == s.itemID.stringValue)
         let (frozen, outOfDate) = ListModel.freeze(fresh, previous: order)
@@ -185,5 +185,74 @@ import HeadroomContracts
         #expect(text.contains("1 needs a look (audible)"))
         #expect(text.contains("1 row can't be closed"))
         #expect(text.contains("frees ≈"))
+    }
+}
+
+/// DOCKER is read-only: nothing in it can be selected, and it never changes what the other sections show.
+@Suite struct DockerListTests {
+    let now = Date()
+    var world: WorldSnapshot { MockWorld.snapshot(now: now) }
+    func rows(_ o: ListOptions = ListOptions(), _ w: WorldSnapshot? = nil) -> [Row] {
+        ListModel.build(w ?? world, protections: [:], options: o, now: now)
+    }
+    func with(_ d: DockerSnapshot) -> WorldSnapshot {
+        let w = world
+        return WorldSnapshot(system: w.system, chrome: w.chrome, claude: w.claude, ownership: w.ownership,
+                             selfBytes: w.selfBytes, at: w.at, isMock: true, docker: d)
+    }
+
+    @Test func sectionShowsTheVMProjectsContainersAndDisk() throws {
+        let docker = try #require(rows().first { $0.section == .docker })
+        let d = world.docker
+        // The section's number is the VM on this Mac, not the containers' sum.
+        #expect(docker.bytes == d.vmFootprint && docker.bytes != d.containersMemory)
+        #expect(docker.badge?.hasPrefix("colima · 7 containers running · 3 stopped · containers use ") == true)
+        let groups = docker.children.filter { $0.kind == .subgroup }
+        #expect(groups.map(\.title) == ["quote-composer", "oakfield-ledger"])          // by memory, descending
+        #expect(groups[1].children.map(\.title) == ["backend", "worker", "db", "redis"])
+        #expect(groups[1].bytes == d.projects.first { $0.name == "oakfield-ledger" }?.memory)
+        // A container started without compose sits beside the projects under its own name.
+        let loose = try #require(docker.children.first { $0.kind == .container })
+        #expect(loose.title == "scratch-pg" && loose.location == "postgres:17" && loose.state == "Up 5 days")
+        // The disk note is last, in decimal units, with its age.
+        let disk = try #require(docker.children.last)
+        #expect(disk.note == .dockerDisk)
+        #expect(disk.title.hasPrefix("Disk 67.1 GB, 29.1 GB reclaimable · images 41.2 GB · build cache 15.2 GB"))
+        #expect(disk.title.hasSuffix("read 7m ago"))
+        // Nothing in DOCKER can be selected or closed.
+        var all: [Row] = []
+        docker.walk { all.append($0) }
+        #expect(all.allSatisfy { !$0.selectable && $0.item == nil })
+        #expect(!ListModel.selectableIDs(rows()).contains { $0.hasPrefix("container:") || $0.hasPrefix("docker:") })
+    }
+
+    @Test func filterScopeAndKindToken() throws {
+        // Free text matches name, image and project; empty projects and the disk note go away.
+        let pg = try #require(rows(ListOptions(filter: "postgres")).first { $0.section == .docker })
+        var titles: [String] = []
+        pg.walk { if $0.kind == .container { titles.append($0.title) } }
+        #expect(Set(titles) == ["db", "scratch-pg"])
+        #expect(!pg.children.contains { $0.kind == .note })
+        // is:container shows only DOCKER; a tab-only token hides it; so do the Chrome and Claude scopes.
+        let only = rows(ListOptions(filter: "is:container"))
+        #expect(only.map(\.title) == ["DOCKER"] && only[0].children.last?.note == .dockerDisk)
+        #expect(rows(ListOptions(filter: "is:container >1gb")).first?.children.first?.children.map(\.title) == ["search"])
+        #expect(!rows(ListOptions(filter: "site:linear.app")).contains { $0.section == .docker })
+        #expect(!rows(ListOptions(scope: .chrome)).contains { $0.section == .docker })
+        #expect(!rows(ListOptions(scope: .claude)).contains { $0.section == .docker })
+    }
+
+    @Test func hiddenUnlessTheEngineAnswersAndHonestWithoutAVM() throws {
+        #expect(!rows(ListOptions(), with(.empty)).contains { $0.section == .docker })
+        #expect(!rows(ListOptions(), with(DockerSnapshot(status: .notRunning, runtime: "colima"))).contains { $0.section == .docker })
+        // VM up, nothing running: the VM still costs memory, so the section stays and says so.
+        let idle = DockerSnapshot(status: .running, runtime: "colima", vmPids: [1], vmFootprint: .gb(3))
+        let r = try #require(rows(ListOptions(), with(idle)).first { $0.section == .docker })
+        #expect(r.bytes == .gb(3) && r.children.map(\.note) == [.dockerIdle])
+        // VM not identified: the number falls back to the containers' sum and the tooltip says why.
+        var noVM = world.docker
+        noVM.vmPids = []; noVM.vmFootprint = nil
+        let n = try #require(rows(ListOptions(), with(noVM)).first { $0.section == .docker })
+        #expect(n.bytes == noVM.containersMemory && n.tooltip?.contains("could not tell") == true)
     }
 }

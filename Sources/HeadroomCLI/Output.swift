@@ -40,6 +40,65 @@ enum ListTable {
         if kind.includes(.leftover) {
             section("leftover", "LEFTOVERS", ByteFormat.short(t.leftoversBytes) + " · their Claude session has ended")
         }
+        if kind.includes(.container), let d = s.docker { docker(d, explicit: kind == .docker, width: width, io: io) }
+        else if kind == .docker { io.out(""); io.out("DOCKER  ·  no Docker socket found on this Mac") }
+    }
+
+    /// DOCKER: read-only. Compose projects with their containers, largest first; then disk use.
+    static func docker(_ d: DockerJSON, explicit: Bool, width: Int, io: CLIIO, now: Date = Date()) {
+        guard d.status == "running" else {
+            // In `--kind all` a stopped Docker is not worth a section.
+            if explicit { io.out(""); io.out("DOCKER  ·  \(d.runtime) is not running") }
+            return
+        }
+        var head = [d.runtime]
+        if let vm = d.vmBytes {
+            head.append("VM holds \(ByteFormat.short(vm)) on this Mac"
+                        + (d.vmLimitBytes.map { " (limit \(ByteFormat.short($0)))" } ?? ""))
+        }
+        head.append("\(d.running) running" + (d.stopped > 0 ? ", \(d.stopped) stopped" : ""))
+        if d.running > 0 { head.append("containers use \(ByteFormat.short(d.containersBytes)) inside the VM") }
+        io.out("")
+        io.out("DOCKER  ·  " + head.joined(separator: " · "))
+        if d.containers.isEmpty {
+            io.out("  (no containers running)")
+        } else {
+            io.out(fit("  " + Text.col("PROJECT / CONTAINER", 40) + " " + Text.rcol("MEM", 8) + "  "
+                       + Text.col("STATUS", 24) + " IMAGE", width))
+            var order: [String] = []
+            var groups: [String: [DockerContainerJSON]] = [:]
+            var loose: [DockerContainerJSON] = []
+            for c in d.containers {
+                guard let p = c.project else { loose.append(c); continue }
+                if groups[p] == nil { order.append(p) }
+                groups[p, default: []].append(c)
+            }
+            func sum(_ cs: [DockerContainerJSON]) -> Bytes { cs.reduce(0) { $0 + ($1.bytes ?? 0) } }
+            order.sort { (sum(groups[$0]!), $1) > (sum(groups[$1]!), $0) }
+            func row(_ c: DockerContainerJSON, indent: String) {
+                let name = c.project != nil ? (c.service ?? c.name) : c.name
+                io.out(fit("  " + Text.col(indent + name, 40) + " " + Text.rcol(Text.bytes(c.bytes), 8) + "  "
+                           + Text.col(c.status.isEmpty ? c.state : c.status, 24) + " " + c.image, width))
+            }
+            for p in order {
+                let cs = groups[p]!
+                io.out(fit("  " + Text.col(p, 40) + " " + Text.rcol(ByteFormat.short(sum(cs)), 8) + "  "
+                           + Text.plural(cs.count, "container"), width))
+                for c in cs { row(c, indent: "  ") }
+            }
+            for c in loose { row(c, indent: "") }
+        }
+        if let k = d.disk {
+            var line = "  Disk \(ByteFormat.disk(k.totalBytes))"
+            if k.reclaimableBytes > 0 { line += ", \(ByteFormat.disk(k.reclaimableBytes)) reclaimable" }
+            line += " · images \(ByteFormat.disk(k.images.bytes)) · build cache \(ByteFormat.disk(k.buildCache.bytes))"
+            line += " · volumes \(ByteFormat.disk(k.volumes.bytes)) · containers \(ByteFormat.disk(k.containers.bytes))"
+            let age = Int(now.timeIntervalSince(k.readAt))
+            if age >= 120 { line += " · read \(Text.age(age)) ago (--disk reads it again)" }
+            io.out(line)
+        } else {
+            io.out("  Disk use not read yet: headroom list --kind docker --disk")
+        }
     }
 
     static func line(_ r: ListItem, home: String) -> String {

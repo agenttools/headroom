@@ -5,14 +5,89 @@ import Foundation
 
 /// `headroom list --kind …`
 public enum ListKind: String, Sendable, Codable, CaseIterable {
-    case tabs, sessions, leftovers, all
+    case tabs, sessions, leftovers, docker, all
     public func includes(_ k: ItemKind) -> Bool {
         switch self {
-        case .all: [.tab, .session, .leftover].contains(k)
+        case .all: [.tab, .session, .leftover, .container].contains(k)
         case .tabs: k == .tab
         case .sessions: k == .session
         case .leftovers: k == .leftover
+        case .docker: k == .container
         }
+    }
+}
+
+/// One line of Docker disk use (`list --json` → docker.disk).
+public struct DockerDiskStatJSON: Codable, Sendable, Hashable {
+    public let count: Int
+    public let bytes: Bytes
+    public let reclaimableBytes: Bytes
+    public init(_ s: DockerDiskStat) { count = s.count; bytes = s.size; reclaimableBytes = s.reclaimable }
+}
+
+public struct DockerDiskJSON: Codable, Sendable, Hashable {
+    public let totalBytes: Bytes
+    public let reclaimableBytes: Bytes
+    public let images, containers, volumes, buildCache: DockerDiskStatJSON
+    /// When it was read (it is slow, so it is cached; `list --disk` reads it again).
+    public let readAt: Date
+    public init(_ d: DockerDisk) {
+        totalBytes = d.total; reclaimableBytes = d.reclaimable
+        images = DockerDiskStatJSON(d.images); containers = DockerDiskStatJSON(d.containers)
+        volumes = DockerDiskStatJSON(d.volumes); buildCache = DockerDiskStatJSON(d.buildCache)
+        readAt = d.at
+    }
+}
+
+public struct DockerContainerJSON: Codable, Sendable, Hashable {
+    /// The full container id. Headroom cannot close containers: this is not an ItemID.
+    public let id: String
+    public let name: String
+    public let image: String
+    public let project: String?
+    public let service: String?
+    public let state: String
+    public let status: String
+    /// Memory in use inside the VM (as `docker stats` shows it). nil = not read.
+    public let bytes: Bytes?
+    public let limitBytes: Bytes?
+    /// Percent of one CPU. nil in the CLI (it takes one sample; CPU% needs two).
+    public let cpuPercent: Double?
+    public let pids: Int?
+    public let createdAt: Date?
+    public init(_ c: DockerContainer) {
+        id = c.id; name = c.name; image = c.image; project = c.project; service = c.service
+        state = c.state; status = c.status; bytes = c.memory; limitBytes = c.memoryLimit
+        cpuPercent = c.cpuPercent; pids = c.pids; createdAt = c.createdAt
+    }
+}
+
+/// `headroom list --json` → `docker` (read-only insight; omitted when this Mac has no Docker).
+public struct DockerJSON: Codable, Sendable, Hashable {
+    /// "running" | "notRunning"
+    public let status: String
+    /// "colima", "Docker Desktop", "OrbStack"…
+    public let runtime: String
+    /// What the VM holds on this Mac. nil = the VM's process was not identified.
+    public let vmBytes: Bytes?
+    /// Memory the VM may use.
+    public let vmLimitBytes: Bytes?
+    public let cpus: Int?
+    /// Σ container memory inside the VM.
+    public let containersBytes: Bytes
+    public let running: Int
+    public let stopped: Int
+    public let images: Int
+    /// Running containers, largest first.
+    public let containers: [DockerContainerJSON]
+    public let disk: DockerDiskJSON?
+    public init(_ d: DockerSnapshot) {
+        status = d.status.rawValue; runtime = d.runtime; vmBytes = d.vmFootprint; vmLimitBytes = d.vmMemoryLimit
+        cpus = d.cpus; containersBytes = d.containersMemory; running = d.containers.count
+        stopped = d.stoppedCount; images = d.imageCount
+        containers = d.containers.sorted { ($0.memory ?? 0, $1.name) > ($1.memory ?? 0, $0.name) }
+            .map(DockerContainerJSON.init)
+        disk = d.disk.map(DockerDiskJSON.init)
     }
 }
 
@@ -122,6 +197,8 @@ public struct ListSnapshot: Codable, Sendable {
     public let system: SystemJSON
     public let totals: SectionTotalsJSON
     public let items: [ListItem]
+    /// Docker containers, VM and disk use (additive). nil when not asked for or when there is no Docker.
+    public var docker: DockerJSON? = nil
 
     /// Builds the list from a world and the executor's protections. Items are sorted by bytes, descending.
     /// Incognito tab URLs are omitted.
@@ -183,6 +260,7 @@ public struct ListSnapshot: Codable, Sendable {
             staleSessionFiles: w.claude.staleFiles.count, headroomBytes: w.selfBytes,
             chromeHelperNote: w.chrome.helperNote)
         self.items = items
+        self.docker = kind.includes(.container) && w.docker.status != .notFound ? DockerJSON(w.docker) : nil
     }
 }
 

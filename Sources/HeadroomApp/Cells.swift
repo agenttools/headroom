@@ -230,7 +230,12 @@ import HeadroomContracts
         title.stringValue = r.title
         badge.stringValue = r.badge ?? ""
         total.stringValue = r.bytes.map { ByteFormat.short($0) } ?? ""
-        let c: NSColor = switch r.section { case .chrome: Theme.chrome; case .claude: Theme.claude; case .leftovers: Theme.leftovers }
+        let c: NSColor = switch r.section {
+        case .chrome: Theme.chrome
+        case .claude: Theme.claude
+        case .leftovers: Theme.leftovers
+        case .docker: Theme.docker
+        }
         swatch.layer?.backgroundColor = c.cgColor
     }
 }

@@ -290,6 +290,44 @@ In Rex terms, a **session** holds **windows** (tabs), and a window holds **block
 - A session has a tmux location or a Rex location, never both.
 - **Known gap:** Rex.app can have several windows, and a tab can be torn off into its own window. Such a window may show a tab other than the session's `active_window_id`, and Headroom would then call a pane that is on screen "not visible". Checking this needs a mutating Rex action, so it is not verified (§10).
 
+### 5.2 Docker (read-only)
+
+Headroom shows what Docker costs, and changes nothing in it: no container is stopped, started or removed, and
+nothing is pruned. Docker rows have no `ItemID`, so they cannot be selected, closed or undone.
+
+- **Source.** The Docker Engine API on the engine's unix socket, with HTTP/1.0 `GET` requests only. Headroom does
+  not use the `docker` CLI (an app opened from Finder has no `PATH`). The socket is found the way the CLI finds it:
+  1. `HEADROOM_DOCKER_SOCKET=<path>` (a test seam and an override; `off` turns Docker off).
+  2. `DOCKER_HOST=unix://<path>`. A `tcp://` or `ssh://` engine is not on this Mac and is ignored.
+  3. The current context: `DOCKER_CONTEXT`, else `currentContext` in `~/.docker/config.json`, resolved through
+     `~/.docker/contexts/meta/*/meta.json`.
+  4. The first socket that exists: colima, Docker Desktop, OrbStack, Rancher Desktop, `/var/run/docker.sock`.
+- **Containers.** `/containers/json` (running containers) and `/info` (the VM's memory and CPUs, the stopped
+  count), then one `/containers/<id>/stats?stream=false&one-shot=true` per container, 8 at a time. Memory is
+  cgroup usage minus inactive file cache, the number `docker stats` shows. CPU% is computed from two reads.
+- **The VM on this Mac.** Container memory is memory inside the VM. What the Mac pays is the footprint of the
+  VM's own processes, and the two differ: the VM also holds its kernel and file cache, and it does not always
+  give memory back to macOS when a container stops. Headroom finds the VM's processes in the process table:
+  - colima and lima: the Virtualization.framework VM process that has the same responsible process as the Lima
+    host agent (`ha.pid`) and started just after it, or a `qemu-system-*` child of the host agent. When macOS
+    does not report a responsible process, a lone VM process is taken; with several, none is.
+  - Docker Desktop and OrbStack: their VM processes inside the app bundle.
+  - Otherwise the VM is not identified, and the section's number is the sum of the containers.
+- **Disk.** `/system/df?type=image|container|volume|build-cache`, read at the same time. This takes tens of
+  seconds on a large store, so it runs in the background at most every 15 minutes, is saved in
+  `<support>/docker-disk.json`, and is shown with its age. Sizes are decimal, as `docker system df` prints them.
+- **UI.** A `DOCKER` section after `LEFTOVERS`, in the `All` scope, while the engine answers:
+  - The section's number is the VM's footprint. Its text names the runtime, the running and stopped counts, and
+    the containers' sum against the VM's memory.
+  - Compose projects are group rows with their containers below; other containers stand beside them. A row
+    shows the service or container name, the image, Docker's status text and the memory. The CPU column works.
+  - A last line gives disk use and what is reclaimable.
+  - The memory strip gets a `Docker` segment (the VM's footprint), taken out of `Other`.
+  - Filter words match the name, image, compose project and runtime. `is:container` (or `is:docker`) shows
+    only this section.
+- **Refresh.** A snapshot never waits for Docker: it uses the last background read. Containers are read every
+  5 s while the window is key and every 15 s while it is visible. The CLI reads once before its snapshot.
+
 ---
 
 ## 6. UI
@@ -518,7 +556,7 @@ With `HEADROOM_DRY_RUN=1`, every call logs and returns `.dryRun`.
   | `>500mb`, `<100mb` | memory above or below the size |
   | `idle>2h` | idle longer than the duration |
   | `busy`, `!busy` | busy or not busy |
-  | `is:tab`, `is:session`, `is:leftover` | row kind |
+  | `is:tab`, `is:session`, `is:leftover`, `is:container` | row kind (`is:docker` = `is:container`; Docker rows are read-only, §5.2) |
   | `site:<host>` | tabs on that host |
   | `tmux:<session>` | sessions in that tmux session |
   | `rex:<session>` | sessions in that Rex session (its label; a prefix matches) |
@@ -703,6 +741,8 @@ scripts/                  build.sh, install.sh, uninstall.sh, make-signing-cert.
 | Transcript tails | when the file size changes | same | – |
 | tmux panes and clients | 3 s | 10 s | paused |
 | Rex discovery (`rex ls` + one `session inspect` per session), only while a claude runs in Rex | 3 s | 10 s | paused |
+| Docker containers and memory (engine socket, §5.2), in the background | 5 s | 15 s | paused |
+| Docker disk use (`/system/df`), in the background | when older than 15 min | same | paused |
 | git HEAD | when first seen, then every 30 s | – | – |
 | System strip | 2 s + on memory-pressure events | 10 s | paused |
 

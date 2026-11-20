@@ -1,6 +1,6 @@
 # Design decisions
 
-These decisions were made on 2026-09-30 (item 6 on 2026-11-19), after [SPEC.md](SPEC.md) was written. Where they differ from SPEC.md, they override it.
+These decisions were made on 2026-09-30 (item 6 on 2026-11-19, item 7 on 2026-11-20), after [SPEC.md](SPEC.md) was written. Where they differ from SPEC.md, they override it.
 
 1. **Chrome:** helper extension + native-messaging host for per-tab memory, with the JXA/AppleScript fallback (SPEC §4 as written).
 2. **Close flow:** undo-first. Close at once and show an Undo toast. Show the confirm sheet only for the risky triggers in SPEC §7.
@@ -8,6 +8,7 @@ These decisions were made on 2026-09-30 (item 6 on 2026-11-19), after [SPEC.md](
 4. **Signing:** the user runs `scripts/make-signing-cert.sh` once, by hand. `build.sh` signs with "Headroom Local Signing" when it exists, and falls back to ad-hoc with a warning.
 5. **CLI is in scope for v1** (moved up from SPEC's v1.1 list). See below.
 6. **Rex support** (decided 2026-11-19): sessions that run in Rex get the same depth as sessions in tmux (location, visibility, Peek, Jump, Undo), and tmux behaviour is unchanged. See below and SPEC §5.1.
+7. **Docker insight** (decided 2026-11-20): Headroom shows Docker's memory and disk use, read-only. See below and SPEC §5.2.
 
 ## CLI: `headroom`
 
@@ -75,3 +76,20 @@ Rex is a terminal multiplexer: a session holds windows (tabs), and a window hold
   - The default binary falls back to the CLI in `/Applications` only when `HOME` is the account's real home, so a test with a fake `HOME` finds no binary.
   - The round trip against a real Rex binary is opt-in (`HEADROOM_REX_LIVE_TEST=1`). It starts its own private server and makes no mutating call until `whoami` reports that server's pid.
 - **Compatibility.** Records in `closed.jsonl` written before Rex support still decode. An older Headroom ignores the new Rex keys and reopens a Rex session in the tmux session `headroom`; this is accepted. The `ClaudeGrouping` raw values and the "not in either" group id (`tmux:`) are unchanged, so saved list options and expanded rows survive.
+
+## Docker insight
+
+- **Read-only.** Docker rows cannot be selected or closed. Stopping a container frees memory inside the VM, but
+  the VM does not always return it to macOS, so "close to free memory" would promise something Headroom cannot
+  deliver. The honest number is the VM's footprint on the Mac, and that is what the section shows.
+- **The engine's socket, not the `docker` CLI.** An app opened from Finder has no `PATH`, and `docker stats` waits
+  a second or more per call. The Engine API over the unix socket (HTTP/1.0, `GET` only) answers in milliseconds:
+  one list, one `/info`, and one one-shot stats call per container.
+- **Never on the refresh path.** A snapshot uses the last background read. Disk use (`/system/df`) takes tens of
+  seconds, so it has its own 15-minute cadence and is saved on disk.
+- **The VM is identified, not guessed.** For colima and lima it is the VM process that shares the Lima host
+  agent's responsible process (`responsibility_get_pid_responsible_for_pid`, looked up at run time). When that
+  fails and more than one VM runs, the VM stays unidentified and the section shows the containers' sum instead.
+  The rules for Docker Desktop and OrbStack come from their process names and were not run against those apps.
+- **Not done:** stopping or restarting containers, pruning, remote engines (`tcp://`, `ssh://`), and more than one
+  engine at a time.
