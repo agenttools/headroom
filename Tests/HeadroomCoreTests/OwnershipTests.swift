@@ -135,6 +135,8 @@ struct MiniWorld {
     var sessions: [SessionRecord] = []
     var panes: [TmuxPane] = []
     var hosts: [Wire.HostHello] = []
+    /// Parents of processes left out of the table (Rex's root-owned `login`), served by StaticSysKit.parentPid.
+    var parents: [Int32: Int32] = [:]
     var env = HeadroomEnv(environment: ["HOME": "/Users/t"])
     static let t0 = 1_790_000_000
     static let claudePath = "/Users/t/.local/share/claude/versions/2.1.0"
@@ -155,10 +157,10 @@ struct MiniWorld {
     }
     func assign(uid: UInt32? = 501, excluding: Set<Int32> = []) -> (OwnershipMap, ProcessTable) {
         let t = ProcessTable(samples: samples)
-        let sys = StaticSysKit(table: t, args: args)
-        return (Ownership.assign(t, sessions: sessions, hosts: hosts, tmuxPanes: panes, sys: sys, env: env,
+        return (Ownership.assign(t, sessions: sessions, hosts: hosts, tmuxPanes: panes, sys: sys(t), env: env,
                                  excluding: excluding, uid: uid), t)
     }
+    func sys(_ t: ProcessTable) -> StaticSysKit { StaticSysKit(table: t, args: args, parents: parents) }
     func key(_ pid: Int32) -> ProcKey { samples.first { $0.pid == pid }!.key }
 }
 
@@ -251,6 +253,63 @@ struct MiniWorld {
         w.claude(21630, start: 0)
         (m, _) = w.assign()
         #expect(m.owner[60] == nil, "\(String(describing: m.owner[60]))")
+    }
+
+    static let rexServerPath = "/Users/t/Library/Application Support/com.superlogical.rex/RexServer/Versions/Current/Rex Server.app/Contents/MacOS/rex"
+
+    /// The Rex counterpart of claudePidInheritedFromTmuxIsNotEnvLinked: the rex CLI autostarts the server, so a server
+    /// first started from a claude Bash tool keeps that claude's CLAUDE_PID; values on the server or a pane's first
+    /// process never env-link a daemon that was reparented to launchd.
+    @Test func claudePidInheritedFromRexIsNotEnvLinked() {
+        var w = MiniWorld()
+        let e = ["CLAUDE_PID": "21630", "CLAUDE_CODE_SESSION_ID": "X"]
+        w.proc(700, path: Self.rexServerPath, argv: [Self.rexServerPath, "server", "run", "--listen", "unix:///x/s.sock"],
+               env: e)
+        w.parents[701] = 700                                                   // root-owned login, not in the table
+        w.proc(702, ppid: 701, path: "/bin/zsh", argv: ["-zsh"])               // platform binary: env hidden
+        // A `rex run` block whose command (not a platform binary) carries another inherited value.
+        w.proc(710, ppid: 700, path: "/opt/homebrew/bin/bun", argv: ["bun", "run", "dev"], env: ["CLAUDE_PID": "5555"])
+        w.proc(60, path: "/opt/homebrew/bin/postgres", argv: ["postgres", "-D", "x"], env: e, start: 10)    // daemonized
+        w.proc(61, path: "/opt/homebrew/bin/redis-server", env: ["CLAUDE_CODE_SESSION_ID": "X", "CLAUDE_PID": "4444"],
+               start: 10)                                                                                 // same session id
+        w.proc(62, path: "/opt/homebrew/bin/node", env: ["CLAUDE_PID": "5555"], start: 10)               // from the block
+        w.proc(80, path: "/usr/local/bin/ok-server", env: ["CLAUDE_PID": "7"])                           // control
+        let (m, _) = w.assign()
+        for p: Int32 in [60, 61, 62, 700, 702, 710] {
+            #expect(m.owner[p] == nil, "pid \(p): \(String(describing: m.owner[p]))")
+        }
+        #expect(m.owner[80] == .leftover(pgid: 80, deadClaudePid: 7))
+    }
+
+    /// Already true before Rex support (the `-zsh` login-shell rule); kept as a regression guard.
+    @Test func devServerInARexPaneIsNotALeftover() {
+        var w = MiniWorld()
+        w.proc(700, path: Self.rexServerPath, argv: [Self.rexServerPath, "server", "run"])
+        w.parents[701] = 700
+        w.proc(702, ppid: 701, path: "/bin/zsh", argv: ["-zsh"])
+        w.proc(703, ppid: 702, pgid: 703, path: "/opt/homebrew/bin/bun", argv: ["bun", "dev"], env: ["CLAUDE_PID": "7"])
+        let (m, _) = w.assign()
+        #expect(m.owner[703] == nil, "\(String(describing: m.owner[703]))")
+    }
+
+    /// The Rex chain rule on its own: a server outside any `.app` (a custom build) and a `rex run` block whose first
+    /// process is not a login shell. Neither the .app nor the login-shell rule applies, so only the Rex rule excludes.
+    @Test func rexServerAndBlockRootExcludeTheirSubtree() {
+        var w = MiniWorld()
+        w.proc(700, path: "/opt/rex/bin/rex", argv: ["rex", "server", "run"])
+        w.proc(710, ppid: 700, pgid: 710, path: "/opt/homebrew/bin/bun", argv: ["bun", "run", "dev"], env: ["CLAUDE_PID": "7"])
+        w.proc(711, ppid: 710, pgid: 710, path: "/opt/homebrew/bin/node", env: ["CLAUDE_PID": "7"])
+        w.proc(720, path: "/opt/rex/bin/rex", argv: ["rex", "server", "logs", "--follow"])        // not a server
+        w.proc(721, ppid: 720, pgid: 721, path: "/opt/homebrew/bin/node", env: ["CLAUDE_PID": "8"])  // control
+        let (m, t) = w.assign()
+        #expect(m.owner[710] == nil && m.owner[711] == nil, "\(String(describing: m.owner[710]))")
+        #expect(m.owner[721] == .leftover(pgid: 721, deadClaudePid: 8))
+        #expect(Ownership.verify(m, table: t, tmuxPanes: [], env: w.env, sys: w.sys(t)).isEmpty)
+        // verify() reports a Rex server or pane process found inside a unit.
+        let bad = OwnershipMap(owner: [710: .leftover(pgid: 710, deadClaudePid: 7), 711: .leftover(pgid: 710, deadClaudePid: 7)],
+                               browsers: [])
+        let problems = Ownership.verify(bad, table: t, tmuxPanes: [], env: w.env, sys: w.sys(t))
+        #expect(problems == ["Rex server or pane process 710 inside a unit leftover(pgid: 710, deadClaudePid: 7)"])
     }
 
     @Test func otherUsersAndSelfAreNeverUnits() {

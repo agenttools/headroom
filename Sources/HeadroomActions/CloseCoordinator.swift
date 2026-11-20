@@ -7,13 +7,15 @@
 //      Exited sessions with the box ticked: SIGTERM each surviving recorded background unit
 //      (kill(-pgid), or the pid for automation browsers); survivors after 2 s → needsForce.
 //      Right before the SIGTERM, each session's protection is re-evaluated on fresh state (freshSessions): a
-//      session that became busy, visible or recently active since the plan is skipped (.changedSkipped).
+//      session that became busy, visible (tmux or Rex; a Rex pane that can no longer be placed counts as visible)
+//      or recently active since the plan is skipped (.changedSkipped).
 //   4. Leftovers: a fresh scan, then the Signaller revalidates members' startSec right before kill(-pgid);
 //      survivors after 2 s → needsForce.
 //   Units with an automation browser: kill(-pgid) of the unit (the recorded browsers are allowed .app members),
 //   plus SIGTERM to each recorded browser that runs in its own process group. A background unit that could not
 //   be stopped is reported as a .failed progress event for its .process id.
-//   5. closed.jsonl record per closed item; actions.jsonl line per signal/close (Signaller + here).
+//   5. closed.jsonl record per closed item (a session keeps its tmux session, or its Rex session id + label, for
+//      Undo); actions.jsonl line per signal/close (Signaller + here).
 // SIGKILL is never sent automatically: only forceQuit(_:) sends it, for ids this coordinator recorded.
 // In dry run no tab is closed and no signal is sent (Signaller returns .dryRun after its checks).
 
@@ -40,8 +42,8 @@ public struct CloseBackend: Sendable {
     /// Re-snapshot for the "asked to stay open" check: which of these tabs still exist.
     public var presentTabs: @Sendable ([TabRef]) async -> Set<TabRef>
     public var reopenSessions: (@Sendable ([ClosedRecord]) async -> [ClosedRecord: Outcome])?
-    /// Fresh Claude state for these sessions, taken right before SIGTERM (busy / pane / activity re-check).
-    /// nil = trust the plan (tests).
+    /// Fresh Claude state for these sessions, taken right before SIGTERM (busy / tmux or Rex pane / activity
+    /// re-check). nil = trust the plan (tests).
     public var freshSessions: (@Sendable ([ProcKey]) async -> [ProcKey: ClaudeSession])?
     public init(sys: any SysKit, chrome: (any ChromeProvider)? = nil,
                 panes: @escaping @Sendable () async -> [TmuxPane] = { [] },
@@ -77,7 +79,9 @@ public final class CloseCoordinator: @unchecked Sendable {
         self.journal = j
         self.recent = recent ?? RecentlyClosed(env: env)
         let sys = backend.sys
-        self.signaller = Signaller(env: env, sender: sender, journal: j, args: { sys.args($0) })
+        // parentPid sees Rex's root-owned `login` that scan() leaves out (Rex pane processes, §7.4 (b)).
+        self.signaller = Signaller(env: env, sender: sender, journal: j, args: { sys.args($0) },
+                                   parentPid: { sys.parentPid($0) })
         self.source = source; self.timing = timing; self.protectedPids = protectedPids
     }
 
@@ -146,8 +150,8 @@ public final class CloseCoordinator: @unchecked Sendable {
                     sessionTargets.append((i, s))
                 }
             }
-            // Re-check busy / visible pane / recent activity on fresh state: the sheet or the CLI's y/N prompt
-            // may have been open for a while, and "Skip Busy" only knew about sessions busy at plan time.
+            // Re-check busy / visible tmux or Rex pane / recent activity on fresh state: the sheet or the CLI's y/N
+            // prompt may have been open for a while, and "Skip Busy" only knew about sessions busy at plan time.
             if let fresh = backend.freshSessions, !sessionTargets.isEmpty {
                 let now = await fresh(sessionTargets.map { $0.1.key })
                 sessionTargets = sessionTargets.filter { (i, s) in
@@ -295,7 +299,7 @@ public final class CloseCoordinator: @unchecked Sendable {
         if env.dryRun {
             for r in tabs { out[r] = .dryRun }
             // Sessions still go through reopen: it runs the real refusals (still running, cwd missing) and
-            // returns .dryRun only after them, without touching tmux.
+            // returns .dryRun only after them, without touching tmux or Rex.
             if !sessions.isEmpty {
                 if let reopen = backend.reopenSessions { out.merge(await reopen(sessions)) { $1 } }
                 else { for r in sessions { out[r] = .dryRun } }
@@ -307,7 +311,7 @@ public final class CloseCoordinator: @unchecked Sendable {
             }
             if !sessions.isEmpty {
                 if let reopen = backend.reopenSessions { out.merge(await reopen(sessions)) { $1 } }
-                else { for r in sessions { out[r] = .failed("tmux is not available") } }
+                else { for r in sessions { out[r] = .failed("tmux or Rex is not available") } }
             }
         }
         let ok = out.filter { $0.value == .done || $0.value == .dryRun }.map(\.key.id)
@@ -437,6 +441,9 @@ public final class CloseCoordinator: @unchecked Sendable {
             if let s = w.claude.sessions.first(where: { $0.key == k }) {
                 r.sessionId = s.hasTranscript && !s.unregistered ? s.sessionId : nil
                 r.cwd = s.cwd; r.tmuxSession = s.tmux?.session
+                // Undo reopens it in this Rex session: by id, else by label ("" = label unknown → not recorded).
+                r.rexSessionId = s.rex?.sessionId
+                r.rexSessionLabel = (s.rex?.sessionLabel).flatMap { $0.isEmpty ? nil : $0 }
             }
         case .leftover:
             if let l = w.claude.leftovers.first(where: { $0.id == item.id }) {

@@ -106,6 +106,14 @@ public struct TmuxClient: Sendable {
         return nil
     }
 
+    /// A tmux server or client: executable basename "tmux", or argv0 basename starting with "tmux".
+    /// (RexProcess.boundary uses it: the nearest of a tmux process and a Rex server decides the multiplexer.)
+    public static func isTmuxProcess(path: String, argv0: String?) -> Bool {
+        if Ownership.basename(path) == "tmux" { return true }
+        guard let a0 = argv0, !a0.isEmpty else { return false }
+        return Ownership.basename(a0).hasPrefix("tmux")
+    }
+
     /// The client to drive for a jump: the most active client attached to `session`, else the most active one.
     public static func jumpClient(for session: String, clients: [TmuxClientInfo]) -> TmuxClientInfo? {
         clients.filter { $0.session == session }.max { $0.activity < $1.activity }

@@ -18,10 +18,11 @@
 // the user's work):
 //   - path inside any `.app` bundle;
 //   - argv0 basename ∈ {tmux, limactl, colima, docker, ssh-agent}, or argv0 starts with "-" (login shell);
-//   - the ppid chain (including the pid itself) passes through a tmux process, a tmux pane_pid, a live
-//     claude, or (extension of §3) any `.app` process — e.g. `aerospace` spawned by Hammerspoon.app;
-//   - its CLAUDE_PID (or CLAUDE_CODE_SESSION_ID) equals one found in the env of a tmux process or pane shell:
-//     that value was inherited from the terminal, not set by a claude Bash tool.
+//   - the ppid chain (including the pid itself) passes through a tmux process, a tmux pane_pid, a Rex server,
+//     a Rex pane process (RexTopology.blockRoots), a live claude, or (extension of §3) any `.app` process — e.g.
+//     `aerospace` spawned by Hammerspoon.app;
+//   - its CLAUDE_PID (or CLAUDE_CODE_SESSION_ID) equals one found in the env of a tmux process or pane shell, or of
+//     a Rex server or Rex pane process: that value was inherited from the terminal, not set by a claude Bash tool.
 //
 // Other rules worth knowing:
 //   - With a host connected, only host-named browsers are main; the argv heuristics apply only without one.
@@ -49,7 +50,8 @@ public enum Ownership {
     /// Assigns every pid to at most one Owner (SPEC §3 steps 1–6).
     /// - sessions: parsed ~/.claude/sessions/*.json (ClaudeProvider.sessionRecords())
     /// - hosts: connected native-messaging hosts (ChromeProvider.hosts()); browserPid marks the main browser
-    /// - tmuxPanes: TmuxClient.panes(), for the tmux-server / pane_pid exclusions
+    /// - tmuxPanes: TmuxClient.panes(), for the tmux-server / pane_pid exclusions (Rex servers and panes need no
+    ///   input: RexProcess.topology finds them in `t`, using sys.parentPid for the hidden root-owned `login`)
     /// - excluding: pids never assigned (defaults to this process: Headroom counts itself in the footer)
     /// - uid: only this user's processes can become step-3 units (nil = any uid; fixtures)
     public static func assign(_ t: ProcessTable, sessions: [SessionRecord], hosts: [Wire.HostHello],
@@ -113,6 +115,9 @@ public enum Ownership {
         let panePids = Set(tmuxPanes.map(\.panePid))
         var tmuxPids = Set(panePids.compactMap { t.byPid[$0]?.ppid }.filter { $0 > 1 })
         for s in t.byPid.values where pass.argv0Base(s.pid) == "tmux" { tmuxPids.insert(s.pid) }
+        // Rex servers and each block's first process (the counterpart of the tmux server and pane_pids). Pure:
+        // argv is read only for executables named `rex`, and no rex command runs.
+        let rex = RexProcess.topology(in: t, sys: sys)
         let claudePids = Set(claudeByPid.keys)
 
         func selfExcluded(_ pid: Int32) -> Bool {
@@ -127,6 +132,7 @@ public enum Ownership {
         func chainExcluded(_ pid: Int32) -> Bool {
             for p in [pid] + t.ancestors(of: pid) {
                 if tmuxPids.contains(p) || panePids.contains(p) || claudePids.contains(p) { return true }
+                if rex.servers.contains(p) || rex.blockRoots.contains(p) { return true }
                 if p != pid, t.byPid[p] != nil, selfExcluded(p) { return true }
             }
             return false
@@ -136,10 +142,11 @@ public enum Ownership {
         // types there — inherits it. Once such a process is reparented to launchd (nohup, a daemonizing
         // postgres/redis, a killed window) its ppid chain no longer shows the tmux server, so the chain
         // exclusion cannot catch it. Values found on any tmux process or pane shell are therefore "inherited"
-        // and never make a process env-linked (review finding, 2026-09-30).
+        // and never make a process env-linked (review finding, 2026-09-30). The same holds for a Rex server (the
+        // rex CLI autostarts one, possibly from a claude Bash tool) and Rex pane processes.
         var inheritedClaudePids: Set<Int32> = []
         var inheritedSessionIds: Set<String> = []
-        for p in tmuxPids.union(panePids) where t.byPid[p] != nil {
+        for p in tmuxPids.union(panePids).union(rex.servers).union(rex.blockRoots) where t.byPid[p] != nil {
             guard let e = pass.args(p)?.env else { continue }
             if let cp = e["CLAUDE_PID"].flatMap({ Int32($0) }), cp > 0 { inheritedClaudePids.insert(cp) }
             if let sid = e["CLAUDE_CODE_SESSION_ID"], !sid.isEmpty { inheritedSessionIds.insert(sid) }
@@ -385,6 +392,7 @@ extension Ownership {
                               env: HeadroomEnv, sys: (any SysKit)? = nil) -> [String] {
         var problems: [String] = []
         let panePids = Set(tmuxPanes.map(\.panePid))
+        let rex = RexProcess.topology(in: t, argv: { sys?.args($0)?.argv }, parentPid: { sys?.parentPid($0) })
         let liveClaude = Set(map.liveSessions.map(\.pid))
         let mains = Set(map.browsers.filter(\.isMain).map(\.key.pid))
         for (pid, o) in map.owner {
@@ -393,6 +401,9 @@ extension Ownership {
             case .leftover, .claudeBackground:
                 if liveClaude.contains(pid) { problems.append("live claude \(pid) inside a unit \(o)") }
                 if panePids.contains(pid) { problems.append("tmux pane pid \(pid) inside a unit \(o)") }
+                if rex.servers.contains(pid) || rex.blockRoots.contains(pid) {
+                    problems.append("Rex server or pane process \(pid) inside a unit \(o)")
+                }
                 if mains.contains(pid) { problems.append("main browser \(pid) inside a unit \(o)") }
                 if env.isClaudeBinary(path: s.path), let sys, let a = sys.args(s.key),
                    ["claude", basename(s.path)].contains(basename(a.argv0)) {

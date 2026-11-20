@@ -3,8 +3,9 @@
 //     let r = await ClaudeSelfTest.run(env: env, hosts: { await chrome.hosts() })
 //     print(r.render()); exit(r.passed ? 0 : 1)
 //
-// It scans processes, reads ~/.claude/sessions and transcript tails, and runs `tmux list-panes` / `list-clients`.
-// It never signals, writes, or runs a mutating tmux command.
+// It scans processes, reads ~/.claude/sessions and transcript tails, and runs `tmux list-panes` / `list-clients`;
+// when a Rex server runs, also the read-only `rex ls`, `session inspect` and `whoami` (never starting a server).
+// It never signals, writes, or runs a mutating tmux or rex command.
 
 import Darwin
 import Foundation
@@ -127,7 +128,27 @@ public enum ClaudeSelfTest {
         let current = inTmux.filter { $0.tmux!.current }
         let wrong = inTmux.filter { s in !(t.ancestors(of: s.key.pid) + [s.key.pid]).contains(s.tmux!.panePid) }
         r.add(g, "tmux", current.count <= 1 && wrong.isEmpty,
-              "\(panes.count) panes, \(clients.count) clients; \(inTmux.count) sessions placed, \(inTmux.filter { $0.tmux!.visible }.count) visible, \(current.count) current; not in tmux: \(snap.sessions.filter { $0.tmux == nil }.map(\.key.pid))")
+              "\(panes.count) panes, \(clients.count) clients; \(inTmux.count) sessions placed, \(inTmux.filter { $0.tmux!.visible }.count) visible, \(current.count) current; not in tmux or Rex: \(snap.sessions.filter { !$0.inMultiplexer }.map(\.key.pid))")
+
+        // Rex: no session is in both, and every claude whose ppid chain reaches a Rex server (before any tmux) is
+        // placed in its block; when such a claude exists, discovery must also be complete (rexCheck).
+        let topo = RexProcess.topology(in: t, sys: sk)
+        if topo.servers.isEmpty {
+            r.add(g, "rex", true, "no Rex server running")
+        } else {
+            let st = await source.rex.state()
+            let who = await source.rex.whoami()
+            let panePids = Set(panes.map(\.panePid))
+            let inRex = snap.sessions.filter { s in
+                if case .rex = RexProcess.boundary(of: s.key.pid, in: t, topology: topo, sys: sk, tmuxPanePids: panePids) {
+                    return true
+                }
+                return false
+            }
+            let c = rexCheck(sessions: snap.sessions, inRex: inRex, state: st, who: who,
+                             rexFound: FileManager.default.isExecutableFile(atPath: env.rexPath), rexPath: env.rexPath)
+            r.add(g, "rex", c.passed, c.detail)
+        }
 
         // No process counted twice across sessions and leftovers.
         var seen: [ProcKey: String] = [:]
@@ -155,14 +176,15 @@ public enum ClaudeSelfTest {
         let s0 = DispatchTime.now().uptimeNanoseconds
         let snap2 = await source.snapshot(t2, map2, sk)
         let snapMs = Double(DispatchTime.now().uptimeNanoseconds - s0) / 1e6
-        r.notes.append(String(format: "warm snapshot: %.1f ms for %d sessions (includes tmux list-panes + list-clients)",
+        r.notes.append(String(format: "warm snapshot: %.1f ms for %d sessions (includes tmux list-panes + list-clients, and rex ls + session inspect when a claude runs in Rex)",
                               snapMs, snap2.sessions.count))
 
         // Notes: the session table.
         let now = t.takenAt
         r.notes.append("sessions (total = self + children + background):")
         for s in snap.sessions {
-            let whereLabel = WhereLabel.make(tmux: s.tmux, project: s.project, branch: s.branch, worktree: s.worktree)
+            let whereLabel = WhereLabel.make(tmux: s.tmux, rex: s.rex, project: s.project, branch: s.branch,
+                                             worktree: s.worktree)
             let age: String
             if s.busy { age = "busy " + ago(s.statusSince, now) } else { age = "idle " + ago(s.idleSince, now) }
             var flags: [String] = []
@@ -171,8 +193,10 @@ public enum ClaudeSelfTest {
             if s.isLauncher { flags.append("launcher") }
             if !s.hasTranscript { flags.append("no-transcript") }
             if !s.cwdExists { flags.append("cwd-missing") }
-            if s.tmux == nil { flags.append("not-in-tmux") }
-            if s.tmux?.current == true { flags.append("current") } else if s.tmux?.visible == true { flags.append("visible") }
+            if !s.inMultiplexer { flags.append("not-in-tmux") }        // in neither tmux nor Rex
+            if let x = s.rex { flags.append("rex"); if !x.placed { flags.append("rex-unplaced") } }
+            if s.tmux?.current == true { flags.append("current") }
+            else if s.tmux?.visible == true || s.rex?.visible == true { flags.append("visible") }
             r.notes.append(String(format: "  %6d %@ %@ %@ cpu %4.1f%% %@  %@",
                                   s.key.pid, pad(String(s.title.prefix(28)), 28), pad(age, 12), pad(s.status, 5), s.cpuPercent,
                                   pad(ByteFormat.short(s.total) + (s.backgroundBytes > 0 ? " (+\(ByteFormat.short(s.backgroundBytes)) bg)" : ""), 22),
@@ -183,6 +207,31 @@ public enum ClaudeSelfTest {
             r.notes.append("  \(l.id.stringValue)  \(ByteFormat.short(l.unit.footprint))  \(l.unit.members.count) procs  dead CLAUDE_PID \(l.deadClaudePid)  \(l.sessionTitle ?? "-")  \(l.unit.command.prefix(60))")
         }
         return r
+    }
+
+    /// The `rex` check, run when a Rex server is in the process table. `inRex`: the sessions whose ppid chain reaches
+    /// a Rex server before any tmux. It fails when a session is in both tmux and Rex, a claude in Rex has no Rex
+    /// location or an unplaced one, or, only when some claude runs in Rex, discovery is unreachable or incomplete. With
+    /// no claude in Rex the snapshot makes no rex call, so discovery is printed for information only (a private or
+    /// other-version server, a missing rex CLI or more than 64 sessions then do not fail the self-test).
+    static func rexCheck(sessions: [ClaudeSession], inRex: [ClaudeSession], state st: RexState, who: RexServerInfo?,
+                         rexFound: Bool, rexPath: String) -> (passed: Bool, detail: String) {
+        let withRex = sessions.filter { $0.rex != nil }
+        let both = sessions.filter { $0.tmux != nil && $0.rex != nil }
+        let unplaced = withRex.filter { !$0.rex!.placed }
+        let noEnv = inRex.filter { $0.rex == nil }
+        let discoveryOK = st.reachable && st.complete
+        let needDiscovery = !inRex.isEmpty          // the snapshot calls rex only in this case
+        let passed = (discoveryOK || !needDiscovery) && both.isEmpty && noEnv.isEmpty && unplaced.isEmpty
+        let detail = "server \(who?.version ?? "?") api \(who?.apiRevision ?? -1) pid \(who?.pid ?? 0); "
+            + "\(st.sessions.count) sessions, \(st.blocks.count) panes, reachable \(st.reachable), complete \(st.complete)"
+            + (needDiscovery ? "" : " (information only: no claude in Rex)")
+            + (rexFound ? "" : "; rex not found at \(rexPath)")
+            + "; \(inRex.count) claudes in Rex, \(withRex.count - unplaced.count) placed, "
+            + "\(withRex.filter { $0.rex!.visible }.count) visible; in Rex but not placed: \(unplaced.map(\.key.pid)); "
+            + "in Rex without REX_BLOCK/REX_SESSION: \(noEnv.map(\.key.pid))"
+            + (both.isEmpty ? "" : "; in both tmux and Rex: \(both.map(\.key.pid))")
+        return (passed, detail)
     }
 
     static func isClaude(_ s: ProcSample, sk: LiveSysKit, env: HeadroomEnv) -> Bool {

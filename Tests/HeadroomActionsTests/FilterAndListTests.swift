@@ -113,7 +113,7 @@ import HeadroomContracts
         let rows = ListModel.build(world, protections: prot, options: ListOptions(claudeGrouping: .tmux), now: now)
         let groups = rows[1].children
         #expect(groups.allSatisfy { $0.kind == .subgroup && !$0.selectable })
-        #expect(groups.last?.title == "Not in tmux")
+        #expect(groups.last?.title == "Not in tmux or Rex")
         #expect(groups.reduce(0) { $0 + $1.children.count } == world.claude.sessions.count)
     }
 

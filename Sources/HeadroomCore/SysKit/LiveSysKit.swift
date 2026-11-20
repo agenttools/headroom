@@ -2,9 +2,12 @@
 //
 //  scan():         proc_listallpids + PROC_PIDTBSDINFO + proc_pid_rusage(RUSAGE_INFO_V6) + proc_pidpath
 //                  (path cached per (ProcKey, comm), so exec is noticed). No subprocess, ever.
-//  args(k):        KERN_PROCARGS2 → argv + filtered env (CLAUDE_* minus credentials, TMUX, TMUX_PANE),
-//                  cached per ProcKey (negative results too); pruned to live keys on every scan().
+//  args(k):        KERN_PROCARGS2 → argv + filtered env (CLAUDE_* minus credentials, plus TMUX, TMUX_PANE,
+//                  REX_SESSION, REX_BLOCK), cached per ProcKey (negative results too), dropped when scan() sees its
+//                  comm change (exec); pruned to live keys on every scan().
 //  cwd(pid):       PROC_PIDVNODEPATHINFO
+//  parentPid(pid): PROC_PIDT_SHORTBSDINFO, which also answers for other users' processes that scan() leaves out
+//                  (Rex's root-owned /usr/bin/login between the Rex server and a pane's shell). Not cached.
 //  systemMemory(): host_statistics64(HOST_VM_INFO64) + hw.memsize + vm.swapusage
 //                  + kern.memorystatus_vm_pressure_level (Activity Monitor's formulas).
 //  isAlive(k):     PROC_PIDTBSDINFO start time == k.startSec and not a zombie. Never sends a signal.
@@ -105,6 +108,7 @@ public final class LiveSysKit: SysKit, @unchecked Sendable {
         var seen: Set<ProcKey> = []
         seen.reserveCapacity(pids.count)
         var newPaths: [ProcKey: (comm: String, path: String)] = [:]
+        var execed: [ProcKey] = []
 
         lock.lock()
         let cachedPaths = pathCache
@@ -119,6 +123,7 @@ public final class LiveSysKit: SysKit, @unchecked Sendable {
             if let c = cachedPaths[key], c.comm == comm {
                 path = c.path
             } else {
+                if cachedPaths[key] != nil { execed.append(key) }   // same pid + start time, new image: exec
                 path = Self.pidPath(pid) ?? ""
             }
             newPaths[key] = (comm, path)
@@ -136,6 +141,8 @@ public final class LiveSysKit: SysKit, @unchecked Sendable {
         lock.lock()
         pathCache = newPaths
         liveKeys = seen
+        // An exec replaced argv and env (e.g. `exec claude` in a pane shell): read them again on the next args(k).
+        for k in execed { argsCache.removeValue(forKey: k) }
         // Prune args of processes that are gone (bounded memory for a long-running app).
         if argsCache.count > seen.count + 64 {
             argsCache = argsCache.filter { seen.contains($0.key) }
@@ -204,6 +211,14 @@ public final class LiveSysKit: SysKit, @unchecked Sendable {
     public func isAlive(_ k: ProcKey) -> Bool {
         guard let bi = Self.bsdInfo(k.pid) else { return false }
         return Int(bi.pbi_start_tvsec) == k.startSec && bi.pbi_status != UInt32(SZOMB)
+    }
+
+    public func parentPid(_ pid: Int32) -> Int32? {
+        var info = proc_bsdshortinfo()
+        let size = Int32(MemoryLayout<proc_bsdshortinfo>.stride)
+        let r = proc_pidinfo(pid, PROC_PIDT_SHORTBSDINFO, 0, &info, size)
+        guard r == size, let ppid = Int32(exactly: info.pbsi_ppid), ppid > 0 else { return nil }
+        return ppid
     }
 
     // MARK: - System helpers

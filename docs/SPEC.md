@@ -22,7 +22,7 @@ This design was chosen from several alternatives. It drops features that measure
 | Memory figure | `proc_pid_rusage(RUSAGE_INFO_V6).ri_phys_footprint`, the same figure as Activity Monitor's Memory column. RSS appears only in tooltips. The app never starts `ps` or `footprint`. |
 | Chrome per-tab memory | Unpacked MV3 extension with a fixed id (`key`) and permissions `tabs`, `webNavigation`, `sessions`, `nativeMessaging`, plus a native-messaging host `headroom-host` that relays over a Unix socket. The join key is `frames[].processId` to `--renderer-client-id=N`, **scoped per browser pid**. |
 | Chrome without the extension | JXA through `/usr/bin/osascript`. It lists and closes tabs by id. Memory is shown for the Chrome section total and for the "Chrome itself" rows, and per tab as "—". It is offered on the first-run card **alongside** the extension setup, not hidden. |
-| Claude sessions | `~/.claude/sessions/*.json`, checked against the live pid and `procStart` (UTC). Memory = claude plus its ppid tree plus background processes linked by environment. Context comes from transcript tails, tmux (resolved live) and `.git/HEAD`. |
+| Claude sessions | `~/.claude/sessions/*.json`, checked against the live pid and `procStart` (UTC). Memory = claude plus its ppid tree plus background processes linked by environment. Context comes from transcript tails, tmux or Rex (resolved live; §5, §5.1) and `.git/HEAD`. |
 | Leftovers | Process groups whose `CLAUDE_PID` points to a dead session, after strict exclusions. Always confirmed before closing and never undoable. |
 | Automation browsers | Chrome instances that are not the user's main profile (headless, or with a non-default `--user-data-dir` or `--remote-debugging-*`), such as an agent-browser instance (pid 85291 in the ownership test fixture). Each belongs to the Claude session that owns it, or becomes a leftover. It is **never** mixed with the real tabs and **never** counted twice. |
 | Close flow | Undo-first (see Q2). Items without confirmation reasons close at once and show an Undo toast. The sheet appears only for the triggers in §7. ⌥ skips the sheet **except** for busy sessions and leftovers. |
@@ -55,7 +55,7 @@ This design was chosen from several alternatives. It drops features that measure
 │   │         KERN_PROCARGS2 (argv+env, cached per ProcKey), VNODEPATHINFO,│
 │   │         host_statistics64, vm.swapusage, pressure level              │
 │   ├ Ownership: assigns every pid to exactly one bucket (§3)              │
-│   ├ ClaudeSource: sessions JSON, transcript tails, tmux, git HEAD        │
+│   ├ ClaudeSource: sessions JSON, transcript tails, tmux, Rex, git HEAD   │
 │   └ ChromeSource: ChromeBridge (socket server) + Attribution + JXA       │
 │  ActionKit: plan → (sheet) → execute → verify → undo log (§7)            │
 │  @MainActor UI: NSOutlineView + strip + footer + sheet + toast + peek    │
@@ -86,7 +86,7 @@ This design was chosen from several alternatives. It drops features that measure
 
 ## 3. Process ownership (the no-double-count pass)
 
-Each refresh builds one `ProcessTable` and then runs a single `Ownership.assign(table, sessions, hosts, tmuxPanes)`. Every pid ends up in **at most one** bucket. `--selftest` asserts this.
+Each refresh builds one `ProcessTable` and then runs a single `Ownership.assign(table, sessions, hosts, tmuxPanes)`. Every pid ends up in **at most one** bucket. `--selftest` asserts this. Rex needs no extra input: its servers and pane processes are found in the table itself (§5.1), with no rex call.
 
 1. **Chrome browser instances.** A browser is a pid whose `proc_pidpath` is `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome` and whose argv has no `--type`.
    - Each browser owns its whole ppid subtree: helpers and crashpad.
@@ -104,7 +104,8 @@ Each refresh builds one `ProcessTable` and then runs a single `Ownership.assign(
    - **Exclude it** if any of these hold:
      - its path is inside any `.app` bundle;
      - its argv0 is `tmux`, `limactl`, `colima`, `docker`, `ssh-agent`, or starts with `-` (a login shell);
-     - its ppid chain to launchd passes through the tmux server, any tmux `pane_pid` or a live claude.
+     - its ppid chain to launchd passes through the tmux server, any tmux `pane_pid`, a Rex server, a Rex pane process (§5.1) or a live claude;
+     - its `CLAUDE_PID` or `CLAUDE_CODE_SESSION_ID` equals one found in the environment of a tmux process, a tmux pane shell, a Rex server or a Rex pane process. That value was inherited from the terminal, not set by a claude Bash tool, so it still holds after the process is reparented to launchd.
    - Otherwise its **root** is the highest ancestor that is still env-linked and not excluded. The root and its whole ppid subtree form one unit. **An automation browser under that subtree comes with it**, which is how agent-browser's Chrome ends up attached to session 80876 in the ownership test fixture.
    - If `CLAUDE_PID` is a live session, the unit is that session's **background**.
    - If `CLAUDE_PID` is dead, or its start time does not match, the unit is a **leftover**, grouped by (dead CLAUDE_PID, pgid of root). The group's label comes from the root's argv, for example `bun run dev --port 3217`. The session title comes from `closed.jsonl`, or from the dead session's transcript `ai-title` found through `CLAUDE_CODE_SESSION_ID`.
@@ -116,6 +117,8 @@ Unit tests replay the `ps.txt` and `psargs.txt` process-list fixtures in `Tests/
 - The tmux server, pane shells (dead CLAUDE_PID 21630), AeroSpace, SwiftBar, Hammerspoon and limactl must be excluded.
 - pgid 7164 (1.2 GB) and pgid 40363 (885 MB) must be found as leftovers.
 - The agent-browser subtree must attach to 80876 and must not appear in the Chrome section.
+
+The fixtures have no Rex processes. Synthetic tables in `OwnershipTests` cover Rex: a `CLAUDE_PID` inherited from a Rex server or Rex pane process does not link a process, and a dev server started in a Rex pane stays unowned.
 
 ---
 
@@ -230,8 +233,8 @@ In degraded mode the Memory column shows "—", a banner explains why, and closi
     - the last assistant text (300 characters);
     - the `system/away_summary` content.
   - Re-read only when the file size changes. **Never** use mtime or the last line.
-- **Title:** `name` if `nameSource=="user"`, otherwise `aiTitle`, otherwise tmux `pane_title` without "✳ ", otherwise `name`.
-- **Where:** `tmuxSession:win.pane › repo ⎇ worktree`.
+- **Title:** `name` if `nameSource=="user"`, otherwise `aiTitle`, otherwise tmux `pane_title` without "✳ ", otherwise `name`. A session in Rex has no pane title (reading one would cost a rex call per pane), so it skips that step.
+- **Where:** `tmuxSession:win.pane › repo ⎇ worktree`, or `rex <session>:<tab>.<pane> › repo ⎇ worktree` for a session in Rex (§5.1).
   - Branch: read `.git/HEAD`, following a worktree's `gitdir:` file and walking up to the repo root. Re-read every 30 s.
   - The worktree name comes from `/.claude/worktrees/<w>`.
 - **tmux** (`/opt/homebrew/bin/tmux`, default socket; one call each per tick):
@@ -240,6 +243,7 @@ In degraded mode the Memory column shows "—", a banner explains why, and closi
   - A session matches the pane whose `pane_pid` equals claude's ppid. The JSON `tmux` field is stale except for its `%pane` id, which is used only as a hint.
   - `visible` = pane_active, window_active and session_attached > 0.
   - `current` = visible in the session of the client with the highest `client_activity`.
+  - A claude whose nearest multiplexer is a Rex server gets no tmux pane, even when tmux runs further up its ppid chain (§5.1).
 - **Busy (combined evidence, because the JSON status alone is unreliable):**
   - busy if **any** of these hold:
     - `status` ∉ {`idle`};
@@ -252,8 +256,39 @@ In degraded mode the Memory column shows "—", a banner explains why, and closi
 - **Flags** (context only):
   - Remote Control (`bridgeSessionId` set): ⤳ glyph.
   - Git dirty/ahead: computed on Peek only, with `git status --porcelain=v1 -uno` and `git rev-list --count @{u}..HEAD`, a 2 s timeout, and at most 4 at once.
-  - **Not in tmux.**
+  - **Not in tmux or Rex.**
   - **cwd missing on disk.**
+
+### 5.1 Rex
+
+Rex is a second terminal multiplexer. Headroom supports it to the same depth as tmux: location, visibility, Peek, Jump and Undo. tmux behaviour is unchanged. Rex support was built on 2026-11-19 against a Rex 0.1.0-preview.20 server (API revision 16). Against a real server only the read-only calls were run (`selftest claude`); the mutating calls of Jump and Undo were tested against a fake `rex` only (§10, §11). Parsing is lenient and no minimum revision is enforced; `headroom selftest claude` prints the server's version and revision.
+
+In Rex terms, a **session** holds **windows** (tabs), and a window holds **blocks** (panes). A window draws its blocks in layers: the first layer is tiled and fills the window, later layers float and can be minimized, and a zoomed block is drawn over the whole window.
+
+- **Binary and server:**
+  - The binary is `HEADROOM_REX`, else `~/.local/bin/rex`. Only when `HOME` is the account's own home (from the user database, not `$HOME`), the CLI inside `/Applications/Rex.app` or `/Applications/Rex Beta.app` is also tried. A GUI app's `PATH` lacks `~/.local/bin`, so the path is explicit.
+  - The server is rex's own personal server. `HEADROOM_REX_SERVER=unix:///<absolute path>` adds `-S <address>` to every call (tests use a private server). Any other form makes every rex call refuse.
+  - Every call is `rex --autostart=false [-S <address>] --timeout <n>s …`, so a call never starts a server. Every `REX_*` variable is removed from the child's environment, so rex never defaults to the server, session or pane that Headroom itself runs in. `rex server …` is refused unless `HEADROOM_REX_SERVER` is set.
+- **Which multiplexer a claude runs in.** This is decided from the process table, with no rex call:
+  - A **Rex server** is an executable named `rex` whose argv contains `server run`. When its argv cannot be read, a path that ends in `/Rex Server.app/Contents/MacOS/rex` counts. `rex server logs --follow`, which Rex.app runs, is not a server.
+  - A block's process chain is: Rex server → `/usr/bin/login` (owned by root) → `-zsh` → claude. `scan()` leaves the root-owned `login` out, so `SysKit.parentPid` reads its parent with `PROC_PIDT_SHORTBSDINFO`, which works across users.
+  - A **Rex pane process** (the counterpart of a tmux `pane_pid`) is a block's first process: the shell under `login`, or the command itself for a `rex run` block.
+  - Headroom walks up the ppid chain from the claude. **The first boundary met wins:** a tmux `pane_pid` or a tmux process means tmux; a Rex server means Rex. So tmux inside a Rex pane is tmux, and tmux attribution is unchanged. A chain that reaches launchd, loops, or runs longer than 64 steps means neither.
+- **Which pane.** It comes from the claude's own `REX_BLOCK` and `REX_SESSION` environment variables, which the env filter keeps. They are trusted only when the walk above reached a Rex server first, because daemons and nested terminals inherit them.
+- **Discovery.** Rex is called only when at least one claude runs in Rex:
+  - `rex ls --json`, then one `rex session inspect <id> --json` per session;
+  - at most 8 calls at a time: the sessions that hold a claude (their `REX_SESSION`) first, then the others, 64 in all (a session that holds a claude is never left out);
+  - a 2 s timeout per call, and a 3 s deadline for the whole pass, after which the remaining calls are cancelled.
+- **Location label:** `<session>:<tab>.<pane>`, for example `foundry:2.1`. Both numbers are 1-based. The tab is the window's position in the session (Rex's own numbering, as in `rex focus 2`). The pane is the block's position across the window's layers, back to front, in layout order. A session without a label shows as `…` and the last 6 characters of its id. The Where column and the CLI's table show `rex foundry:2.1`; `list --json` has `"rex": "foundry:2.1"`.
+- **visible** = all of these hold:
+  - a client that may be showing the session is attached to it, in any connection state (a lost client still counts while Rex keeps it, about 60 s). Only clients of kind `cli` or `agent` are left out: an app client counts, with or without a `client_id`, and so does a client of kind `other`, of a kind Headroom does not know, or with no kind;
+  - the block's tab is the session's `active_window_id`. When `active_window_id` is absent, null, or names no tab of the session, every tab counts as active;
+  - the block is drawn: it is not in a minimized layer, and it floats, or nothing in the window is zoomed, or it is the zoomed block. A layer kind that Headroom does not know counts as floating.
+- **current:** Rex has none. Clients have no activity time, and no read-only call reports which session the app is showing. So every drawn block in the active tab of every attached session counts as visible. This adds confirmations; it never removes one.
+- **Unknown means protected.** A claude that is in Rex but whose block Headroom cannot place gets the location `<session>:?` and counts as **visible**. This happens when discovery failed or timed out, or when its block belongs to a second Rex server (a private or test server). Closing it asks first, and `suggest` skips it. In the same way, viewer state that Headroom cannot read (an unknown active tab, a client of an unknown kind) counts as visible, never as hidden.
+- **A claude in Rex without a usable `REX_BLOCK`** (or with a `REX_BLOCK` that discovery did not find and no `REX_SESSION`) gets no Rex location. It counts as "not in tmux or Rex" (closing it asks first), Undo treats it as a session that ran in neither (§7.7), and `selftest claude` fails and lists its pid.
+- A session has a tmux location or a Rex location, never both.
+- **Known gap:** Rex.app can have several windows, and a tab can be torn off into its own window. Such a window may show a tab other than the session's `active_window_id`, and Headroom would then call a pane that is on screen "not visible". Checking this needs a mutating Rex action, so it is not verified (§10).
 
 ---
 
@@ -308,7 +343,7 @@ In degraded mode the Memory column shows "—", a banner explains why, and closi
   | Glyph | Meaning |
   |---|---|
   | 🔒 | locked |
-  | ◉ | visible or current pane |
+  | ◉ | visible or current tmux pane, or visible Rex pane (§5.1) |
   | ● | busy (soft pulse, paused when occluded) |
   | ⤳ | Remote Control |
   | ⛓×N | shared renderer; a gutter bracket joins the siblings |
@@ -321,7 +356,7 @@ In degraded mode the Memory column shows "—", a banner explains why, and closi
 - **ⓘ popover text:** "Memory is each process's footprint, the same as Activity Monitor's Memory column. It includes compressed and swapped memory and excludes shared read-only code. 'Frees ≈' counts only processes that would exit completely. After closing, Headroom shows the measured drop."
 - **Grouping:**
   - Chrome: Window (default) or None.
-  - Claude: None (default) or tmux session.
+  - Claude: None (default) or tmux session. With Rex support this menu item reads "tmux or Rex Session": it also groups sessions in Rex, by Rex session ("Rex: foundry", keyed by the Rex session id because labels need not be unique). Sessions in neither go into "Not in tmux or Rex", listed last.
   - Site and Process grouping for Chrome come in v1.1.
 - **Empty and error states** appear inline in their section and are never modal:
   - Chrome not running;
@@ -340,7 +375,7 @@ In degraded mode the Memory column shows "—", a banner explains why, and closi
   - sessionId, cwd (flagged if missing), branch plus git dirty/ahead, started time, idle-since or busy-since, version, Remote Control;
   - last prompt, last assistant line, away summary;
   - the child and background tree with footprints;
-  - a read-only `tmux capture-pane -p -t %ID -S -15` in a monospaced box;
+  - a read-only `tmux capture-pane -p -t %ID -S -15` in a monospaced box. For a session in Rex: the place (`Rex foundry:2.1 · <tab label>`, plus "(visible)") and a read-only `rex capture -s <session> -b <block> --trim`, of which Headroom keeps the last 60 lines (Rex has no line limit; nothing is shown when the output reaches Headroom's 8 MB cap, because the tail would be wrong);
   - the resume command `cd '<cwd>' && claude --resume <sid>`.
 - **Leftover:**
   - the process tree with argv and cwd;
@@ -404,8 +439,9 @@ In degraded mode the Memory column shows "—", a banner explains why, and closi
 ⌘W closes Headroom's own window and never closes an item.
 
 **Select ▾ menu** (these items only select; there is no Select & Close):
-- **Idle sessions older than 30m / 1h / 2h / 6h / 1d**, with a live count and GB. These rules exclude busy, visible or current, not-in-tmux, no-transcript, cwd-missing and background-owning sessions, and the launcher.
+- **Idle sessions older than 30m / 1h / 2h / 6h / 1d**, with a live count and GB. These rules exclude busy, on-screen (visible or current tmux pane, visible or unplaced Rex pane), not-in-tmux-or-Rex, no-transcript, cwd-missing and background-owning sessions, and the launcher.
 - Sessions in tmux session ▸ …
+- Sessions in Rex session ▸ … (only when a session runs in Rex; each item selects by the Rex session id, and two Rex sessions with the same label are told apart by the end of their ids)
 - Tabs over 500 MB
 - Sessions over 500 MB
 - Duplicate tabs (keeps the one with the most recent `lastAccessed`)
@@ -426,7 +462,7 @@ In degraded mode the Memory column shows "—", a banner explains why, and closi
 
 | Kind | Reasons |
 |---|---|
-| Sessions | busy (combined evidence) or unknown status; last activity less than 10 min ago; visible or current pane; not in tmux (Undo cannot put it back into tmux); has background processes (checkbox, see below); no transcript yet ("nothing to resume, closing discards it"); cwd missing on disk; unregistered claude |
+| Sessions | busy (combined evidence) or unknown status; last activity less than 10 min ago; visible or current tmux pane, or visible Rex pane (a Rex pane Headroom cannot place counts as visible, §5.1); not in tmux or Rex (Undo cannot put it back where it ran); has background processes (checkbox, see below); no transcript yet ("nothing to resume, closing discards it"); cwd missing on disk; unregistered claude |
 | Tabs | audible; pinned; the selection empties a window with more than 5 tabs; the selection closes every normal window |
 | Leftovers | always (they cannot be undone) |
 | Any | more than 15 items |
@@ -446,7 +482,7 @@ In degraded mode the Memory column shows "—", a banner explains why, and closi
 
 **Signal allowlist**, enforced in `Signaller`, with no exceptions. A signal is sent only to:
 - (a) a live, revalidated claude session pid;
-- (b) a pgid or pid recorded as that session's background, or as a leftover group, that passes the §3 exclusions **again**, contains no live claude, no tmux server and no `pane_pid`/pane pgid, and whose members still have their recorded `startSec`;
+- (b) a pgid or pid recorded as that session's background, or as a leftover group, that passes the §3 exclusions **again**, contains no live claude, no tmux server and no `pane_pid`/pane pgid, contains no Rex server or Rex pane process, is not a Rex pane's process group, does not run under a Rex server or Rex pane process (§5.1; found from the live process table, so this holds even when Rex discovery fails), and whose members still have their recorded `startSec`;
 - (c) an automation browser pid owned by (a) or (b) (Chrome process, `--headless` or `--remote-debugging-*`, non-default `--user-data-dir`, not a host's `browserPid`). Only SIGTERM is sent, to the browser pid only.
 
 **Never** signal:
@@ -464,6 +500,7 @@ With `HEADROOM_DRY_RUN=1`, every call logs and returns `.dryRun`.
    - Revalidate (pid, `procStart`, `/claude/versions/` path).
    - Record the tree and background units with `ProcKey`s.
    - Append the intent to `actions.jsonl`.
+   - Right before the SIGTERM, check each session again on fresh state (tmux and Rex read anew, never from the refresh cache). A session that became busy, visible or recently active since the plan is skipped as `changedSkipped`. A Rex pane that can no longer be placed counts as visible.
    - `kill(pid, SIGTERM)` for all sessions in parallel.
    - Poll every 100 ms for up to 5 s. Sessions still alive get **[Force Quit]** in the toast. SIGKILL is never sent automatically.
    - Once a session has exited, if the box is ticked, send SIGTERM to each surviving recorded background unit (`kill(-pgid)`, or the pid for automation browsers).
@@ -473,7 +510,7 @@ With `HEADROOM_DRY_RUN=1`, every call logs and returns `.dryRun`.
 
 ### 7.5 Filter (⌘F)
 
-- Plain words match title, URL, name, cwd, branch and tmux session.
+- Plain words match title, URL, name, cwd, branch, tmux session, and Rex session and tab label.
 - Tokens:
 
   | Token | Matches |
@@ -484,6 +521,7 @@ With `HEADROOM_DRY_RUN=1`, every call logs and returns `.dryRun`.
   | `is:tab`, `is:session`, `is:leftover` | row kind |
   | `site:<host>` | tabs on that host |
   | `tmux:<session>` | sessions in that tmux session |
+  | `rex:<session>` | sessions in that Rex session (its label; a prefix matches) |
   | `bg` | sessions with background processes |
   | `shared` | tabs sharing a renderer |
   | `sleeping` | discarded tabs |
@@ -494,21 +532,48 @@ With `HEADROOM_DRY_RUN=1`, every call logs and returns `.dryRun`.
 ### 7.6 Jump
 
 - **Tab:** extension `activate` (`tabs.update` active + `windows.update` focused), then `NSRunningApplication` activates Chrome. Fallback: JXA.
-- **Session:**
+- **Session in tmux:**
   1. Resolve `%pane` to its session.
   2. Pick the client with the highest `client_activity` attached to that session, or any client if none is.
   3. Run `switch-client -c <tty> -t <sess>; select-window -t %P; select-pane -t %P`.
   4. If Ghostty Automation is granted: `osascript` `tell application "Ghostty" to focus (first terminal whose name is "<window_name>")`. Otherwise, or if no name matches, activate Ghostty with `NSRunningApplication`, which brings up the last-key window (usually the most active client).
   5. If no client is attached, copy `tmux attach -t <sess>` to the clipboard and run `open -a Ghostty`. `open -na Ghostty --args -e` is not used because it is unverified.
 
+  A session in neither tmux nor Rex: Ghostty is activated, as in step 4.
+- **Session in Rex** (§5.1):
+  1. Find the block: the one the last refresh placed the session in, or, when no refresh has placed it, the claude's `REX_BLOCK` when its ppid chain reaches a Rex server first. A fresh discovery pass gives the block's session and tab.
+  2. `rex focus -s <session> <block>` on the server. This makes the block's tab the session's active tab and focuses the block. It changes shared session state, as `select-window` does in tmux.
+  3. Bring Rex.app forward with `open -b com.superlogical.rex`, which needs no Automation permission and opens a window when Rex has none. Then wait up to 1 s for Rex to become the active app.
+  4. `rex [-C <client>] do session.select session_id=<session> window_id=<tab>`, which makes the app show that session's tab. The client is a connected LOCAL app client (`principal.transport` `unix`) of that session, else any connected local app client, most recently connected first. If there is none, the state is read again after Rex.app comes forward (it may have just connected). If there is still none, `-C` is left out and rex picks its default app client, except when an app client from another device is connected: then step 4 is skipped and the note is shown, because rex's default client would be that device. This is a Rex client action: it needs **Remote Control** turned on in Rex (off by default) and the app in front.
+  5. If step 4 fails or is skipped, the app shows a toast: "If Rex shows another session, open “<session>”." followed by the reason:
+     - exit 3 (the client target was not found, for example Rex.app has not connected yet, or reconnected with a new client id): "Rex.app is not connected to the Rex server (<rex's message>).";
+     - another failure with a message from rex or the app (an app that refuses names Remote Control itself): that message;
+     - a failure with no message: "Turn on Remote Control in Rex so Jump can switch sessions.";
+     - the rex call timed out: "Rex.app did not answer. Make sure it has a window open.";
+     - step 4 skipped: "Rex.app on this Mac is not connected to the Rex server, and Headroom does not switch Rex on another device."
+
+     If the block is not found in step 1, Rex is only brought forward, with the toast "Rex could not find this session's pane, so Rex was only brought forward."
+
+  Rex has no counterpart of `tmux attach`, so there is nothing to copy to the clipboard. Jump is not gated by `HEADROOM_DRY_RUN`, for tmux or Rex: it changes what is shown, never what runs.
+
 ### 7.7 Undo and Recently Closed
 
 - **Tab:** extension `restore` through `sessions.restore(sessionId)`, which keeps history. If that fails, `tabs.create({windowId, index, url, active:false})`, using the front window if the original is gone. The toast says "reopened without history" when the fallback was used.
-- **Session:**
+- **Session in tmux:**
   1. `tmux new-window -d -t '<sess>:' -n '<title>' -c '<cwd>'`
   2. `tmux send-keys -t <newPane> 'claude --resume <sid>' Enter`
   3. If the tmux session is gone: `tmux new-session -d -s <sess> -c <cwd>` and the same `send-keys`, then Jump.
   4. The help text notes that an unsent draft in the prompt box is lost.
+
+  A session that ran in tmux is recorded with `tmuxSession`, and one that ran in Rex with `rexSessionId` and `rexSessionLabel` (§11). A record with either Rex field reopens in Rex. A record with neither multiplexer reopens in the tmux session `headroom`, or in the Rex session `headroom` when tmux is not installed and rex is.
+- **Session in Rex** (§5.1):
+  1. Rex must be running: Headroom never starts it. If `rex ls` fails, the outcome is `failed: Rex is not running (open Rex, then Undo again)`; with no rex binary it is `failed: rex is not installed (<path>)`. The record stays restorable.
+  2. Pick the target: the session with the recorded id, else the first session with the recorded label (`headroom` when no label was recorded), else a new session with that label.
+  3. Existing session: `rex window new -s <session> '<title>' -c '<cwd>' --focus=false --json`, a new tab that does not take focus. New session: `rex new '<label>' -c '<cwd>' --window='<title>' --json`. The tab name follows the tmux window-name rule.
+  4. Each call has a 10 s timeout. A call that failed or timed out may still have worked, so Headroom compares the session's tabs (or the session list) before and after, and adopts the one new tab (or session) with that name. So a tab that was opened after all is used, instead of Undo failing and a later Undo opening a second one. If the session's tabs could not be read before the call, nothing is adopted and Undo fails.
+  5. `rex send -s <session> -b <block> 'claude --resume <sid>'`, then `rex send-key -s <session> -b <block> enter`.
+  6. A new session is then shown: Rex.app is brought forward and asked to show it, as in Jump steps 3–4. If `session.select` fails or is skipped, the outcome stays `done` (the session was resumed), and the Undo toast (and `headroom undo`) adds a note: "Resumed in the new Rex session “<label>”; open it in Rex." followed by the reason, as in Jump step 5 (with "Undo" in place of "Jump").
+  7. As in tmux, an unsent draft is lost. In dry run, the refusals (still running, cwd missing) still apply and no rex command runs.
 - **Leftovers:** cannot be undone. ⌘C gives the argv and cwd so they can be restarted by hand.
 - **⌘Y Recently Closed:** today's batches, with [Restore] per item and "Restore all from 14:32". `closed.jsonl` is pruned after 7 days.
 
@@ -520,14 +585,14 @@ With `HEADROOM_DRY_RUN=1`, every call logs and returns `.dryRun`.
 
 ```
 Package.swift
-Sources/HeadroomCore/     Contracts.swift (now its own HeadroomContracts target), SysKit/, Ownership.swift, Shell.swift, Tmux.swift, Git.swift
+Sources/HeadroomCore/     Contracts.swift (now its own HeadroomContracts target), SysKit/, Ownership.swift, Shell.swift, Tmux.swift, Rex.swift, Git.swift
 Sources/HeadroomClaude/   SessionStore, TranscriptTail, ClaudeSource
 Sources/HeadroomChrome/   ChromeBridge, Attribution, JXAFallback, ChromeSource
 Sources/HeadroomActions/  Planner, CloseCoordinator, Signaller, Journal (closed/actions.jsonl), Undo
 Sources/HeadroomApp/      main.swift, AppDelegate, WindowController, Outline*, Strip, Sheet, Toast, Peek, Setup
 Sources/headroom-host/    main.swift
 Extension/                manifest.json, sw.js
-Tests/                    fixtures (ps.txt, psargs.txt, fake ~/.claude, captured tmux output, snapshot JSON)
+Tests/                    fixtures (ps.txt, psargs.txt, fake ~/.claude, captured tmux output, hand-written rex JSON, snapshot JSON)
 scripts/                  build.sh, install.sh, uninstall.sh, make-signing-cert.sh, mkicon.swift
 ```
 
@@ -575,11 +640,13 @@ scripts/                  build.sh, install.sh, uninstall.sh, make-signing-cert.
 
 | Capability | Needs | Without it |
 |---|---|---|
-| Claude sessions, leftovers, all memory figures, signals, tmux, git | nothing | – |
+| Claude sessions, leftovers, all memory figures, signals, tmux, Rex, git | nothing | – |
 | Chrome process totals and Chrome itself | nothing | – |
 | Per-tab memory, Sleep, restore with history, precise tab jump | helper extension (Developer mode + Load unpacked, once per profile) | "—" per tab |
 | Tab list and close without the extension | Automation ▸ Google Chrome | Totals only |
 | Jump into the exact Ghostty window | Automation ▸ Ghostty (asked at the first Jump, explained beforehand) | tmux still switches; Ghostty is activated generically |
+| Jump into another Rex session | Remote Control turned on in Rex (a Rex setting, not a macOS permission). Rex.app is brought forward with `open -b`, so no Automation is needed. | Rex still focuses the pane and comes forward; a toast asks you to open the session |
+| Show a session that Undo created in Rex | The same as Jump into another Rex session | The session is still resumed; the Undo toast (and `headroom undo`) names the new Rex session to open |
 | Accessibility | never used | – |
 
 ### 8.6 First run
@@ -617,6 +684,7 @@ scripts/                  build.sh, install.sh, uninstall.sh, make-signing-cert.
   - session parse and liveness;
   - transcript tail;
   - tmux;
+  - Rex, when a Rex server runs: no session is in both tmux and Rex; when a claude runs in Rex, discovery is also complete and every claude in Rex is placed in its pane. It runs only the read-only `rex ls`, `session inspect` and `whoami`, and prints the server's version, API revision, and whether discovery was reachable and complete;
   - socket bind;
   - host manifest present and matching the id;
   - the ownership invariant.
@@ -628,17 +696,25 @@ scripts/                  build.sh, install.sh, uninstall.sh, make-signing-cert.
 | Data | Window key | Visible, not key | Occluded, minimised or closed |
 |---|---|---|---|
 | Process table and footprints (`proc_*`; measured at about 2 ms for 815 pids) | 2 s | 10 s | paused |
-| argv and env (`KERN_PROCARGS2`) | only for new `ProcKey`s (Chrome-bundle pids, non-`.app` pids, claude) | same | – |
+| argv and env (`KERN_PROCARGS2`) | only for new `ProcKey`s (Chrome-bundle pids, non-`.app` pids, claude), and again after a process execs (same `ProcKey`, new command name) | same | – |
 | Chrome snapshot (extension) | on `didBecomeKey`, on `dirty`, and a safety poll every 5 s | 10 s | paused |
 | JXA fallback (3 s timeout) | 5 s + on `didBecomeKey` | 30 s | paused |
 | Session JSON | DispatchSource + a 10 s rescan | same | – |
 | Transcript tails | when the file size changes | same | – |
 | tmux panes and clients | 3 s | 10 s | paused |
+| Rex discovery (`rex ls` + one `session inspect` per session), only while a claude runs in Rex | 3 s | 10 s | paused |
 | git HEAD | when first seen, then every 30 s | – | – |
 | System strip | 2 s + on memory-pressure events | 10 s | paused |
 
 - All collection runs in `actor Collector`, which publishes a `Sendable` `WorldSnapshot`. The UI diffs rows by `ItemID`: values change with `reloadData(forRowIndexes:columnIndexes:)`, and structural changes use insert and remove with a 0.2 s fade.
 - Every subprocess runs off the main thread with a timeout.
+- **Rex cost per refresh** (§5.1):
+  - No rex process runs when no Rex server is in the process table, or when no claude runs in Rex. That check is pure, and argv is read only for executables named `rex`.
+  - Otherwise: 1 `ls` plus 1 `session inspect` per session (8 at a time): the sessions that hold a claude (their `REX_SESSION`) first, then the others, 64 in all. This runs after the ownership pass and alongside the Chrome snapshot. On the Mac this was measured on, `ls` took 10–19 ms and each `inspect` 20–25 ms.
+  - Each read has a 2 s rex timeout, and the whole pass a 3 s deadline. A result is cached for the TTL even when it failed, so a Rex server that does not answer costs one bounded pass per TTL. A cached pass that neither put first nor inspected a session that now holds a claude is fetched again at once.
+  - Finding a claude's pane costs nothing extra: `REX_BLOCK` comes from the environment that SysKit already reads.
+  - The close-time re-check (§7.4) never uses the cache.
+  - User actions: Peek runs 1 `capture` (4 s timeout). Jump runs a discovery pass, then `focus` and `do` (5 s timeout each), and a second discovery pass when the first found no local app client. Undo runs `ls`, then `inspect` and `window new` (existing session) or `new` (new session), then `send` and `send-key`; the four mutating calls have 10 s timeouts. Recovering from a failed `window new` or `new` adds up to 2 calls, and showing a new session adds a discovery pass and `do`.
 - **Budget:** under 1% average CPU and under 45 MB for the app. The footer shows the app, host and helper-extension footprints.
 
 ---
@@ -653,6 +729,8 @@ scripts/                  build.sh, install.sh, uninstall.sh, make-signing-cert.
 | `tabs.remove` or AppleScript close vs `beforeunload`; `tabs.discard` on the active tab | Chrome for Testing (`Tests/e2e-chrome/`) | 1 s verification plus [Jump]; Sleep skips the active tab |
 | An `osascript` child's TCC prompt is attributed to Headroom | `scripts/tcc-probe.sh`, run by hand (a throwaway test app aimed at Ghostty) | Use `NSAppleScript` on a dedicated serial thread |
 | Writing to NativeMessagingHosts from install.sh | `install.sh` in a scratch HOME; the real write happens in your own install run | Print the JSON for the user to copy |
+| Rex: a Rex.app window that shows a tab other than the session's `active_window_id` (several workspace windows, a torn-off tab) | **Not verified** (checking needs a mutating Rex action). By hand: tear a tab off once, run `headroom selftest claude`, and compare the `visible` flags with the screen | None yet: such a pane may show as not visible (§5.1) |
+| Rex: `do session.select` switches Rex.app to the session (Remote Control on) | **Not verified live** during the build (tests use a fake `rex`). By hand: Jump to a session in another Rex session | Jump's toast asks you to open the session (§7.6) |
 
 ---
 
@@ -665,6 +743,12 @@ The shared types every module builds on, as first sketched. The code in `Sources
 - Never signal your real processes, never touch your live Chrome beyond read-only JXA, and never edit your Dock, keychain, AeroSpace config or Chrome settings from a test.
 - Signal tests use spawned dummies: copy `/bin/sleep` to `<scratch>/claude/versions/9.9.9` and add a fake sessions JSON under `HEADROOM_CLAUDE_DIR`.
 - Chrome tests use Chrome for Testing with a scratch `--user-data-dir` (see `Tests/e2e-chrome/`). Stop only the processes you started, matched by the scratch path.
+- tmux tests use a private server: `HEADROOM_TMUX_SOCKET=headroom-test`.
+- Rex tests never reach your own Rex server:
+  - Default tests point `HEADROOM_REX` at `RexStub` (a fake `rex` script in a temp folder that logs each call and never talks to a server) or at `/nonexistent/rex`. Claude tests get Rex state from a test seam, and the tmux-or-Rex decision is a pure process walk.
+  - With a fake `HOME` and no `HEADROOM_REX`, the binary resolves to `<HOME>/.local/bin/rex`, which does not exist, so nothing runs. The CLIs in `/Applications` are tried only when `HOME` is the account's own home.
+  - The round trip against a real Rex binary is opt-in (`HEADROOM_REX_LIVE_TEST=1`). It starts its own server on a private socket, makes no mutating call until `whoami` reports that server's pid, and stops only that server. Rex still creates an empty `start.lock` under `~/Library/Application Support/rex/servers`; the test prints new entries and never deletes them.
+  - Never point `HEADROOM_REX_SERVER` at your own server's socket.
 
 ```swift
 public typealias Bytes = UInt64
@@ -681,7 +765,8 @@ public protocol SysKit: Sendable {
   func args(_ k: ProcKey) -> ProcArgs?                  // cached per key
   func cwd(_ pid: Int32) -> String?
   func systemMemory() -> SystemMemory
-  func isAlive(_ k: ProcKey) -> Bool }
+  func isAlive(_ k: ProcKey) -> Bool
+  func parentPid(_ pid: Int32) -> Int32? }          // Rex: works for other users' processes scan() leaves out; default nil
 
 // Ownership (§3)
 public enum Owner: Sendable, Hashable { case chrome(browserPid: Int32), claudeChild(ProcKey), claudeBackground(ProcKey),
@@ -720,12 +805,18 @@ public protocol ChromeProvider: Sendable {
 
 // Claude
 public struct TmuxLoc: Sendable { public let paneId, session, windowName: String; public let windowIndex, paneIndex: Int; public let visible, current: Bool }
+public struct RexLoc: Sendable { public let blockId, sessionId, sessionLabel: String   // full Rex ids; labels need not be unique
+  public let windowId, windowLabel: String?; public let windowIndex, paneIndex: Int?   // nil = not placed (§5.1)
+  public let visible: Bool                                                             // true when not placed
+  public var label: String { get } }                                                   // "foundry:2.1" / "foundry:?"
 public struct LinkedUnit: Sendable { public let root: ProcKey; public let pgid: Int32; public let command: String
   public let members: [ProcKey]; public let footprint: Bytes; public let isAutomationBrowser: Bool }
 public struct ClaudeSession: Sendable { public let key: ProcKey; public let sessionId, cwd, title, project: String
   public let worktree, branch: String?; public let cwdExists, hasTranscript, busy, remoteControl, isLauncher, unregistered: Bool
   public let status: String; public let statusSince, lastActivity: Date?; public let startedAt: Date; public let cpuPercent: Double
-  public let lastPrompt, lastAssistant, awaySummary: String?; public let tmux: TmuxLoc?; public let kind, version: String
+  public let lastPrompt, lastAssistant, awaySummary: String?; public let tmux: TmuxLoc?
+  public let rex: RexLoc?                                   // never set together with tmux
+  public let kind, version: String
   public let selfFootprint, selfRSS: Bytes; public let children: [LinkedUnit]; public let background: [LinkedUnit]
   public var total: Bytes { get } }
 public struct LeftoverGroup: Sendable { public let id: ItemID; public let unit: LinkedUnit; public let deadClaudePid: Int32
@@ -750,7 +841,8 @@ public struct ClosePlan: Sendable { public let items: [(ItemID, Protection, Byte
   public var needsSheet: Bool { get }; public var sheetMandatory: Bool { get } }   // mandatory = busy / leftover / unregistered
 public struct ClosedRecord: Codable, Sendable, Hashable { public let kind: String; public let closedAt: Date; public let title: String
   public let bytes: Bytes; public var url: String?; public var windowId, index: Int?; public var chromeSessionId: String?
-  public var sessionId, cwd, tmuxSession: String?; public var argv: [String]? }
+  public var sessionId, cwd, tmuxSession: String?; public var argv: [String]?
+  public var rexSessionId, rexSessionLabel: String? }      // Rex Undo target; absent in older records
 public enum ActionEvent: Sendable { case progress(ItemID, Outcome), needsForce([ItemID]), finished([ClosedRecord]) }
 public protocol ActionExecutor: Sendable {
   func plan(_ sel: Set<ItemID>, _ w: WorldSnapshot) -> ClosePlan
@@ -758,20 +850,28 @@ public protocol ActionExecutor: Sendable {
   func forceQuit(_ ids: [ItemID]) async
   func sleep(_ tabs: [ItemID]) async -> [ItemID: Outcome]
   func undo(_ r: [ClosedRecord]) async -> [ClosedRecord: Outcome]
-  func jump(_ id: ItemID) async }
+  func jump(_ id: ItemID) async
+  func jumpNote(_ id: ItemID) async -> String? }           // Jump + the Rex note for a toast (§7.6); default: jump, nil
 ```
 
-**Test seams:** `HEADROOM_CLAUDE_DIR`, `HEADROOM_TMUX`, `HEADROOM_SUPPORT_DIR`, `HEADROOM_DRY_RUN`, and `HEADROOM_CLAUDE_VERSIONS_GLOB` (so the fake `claude/versions` path is accepted).
+`ClaudeSession` also has helpers that treat tmux and Rex alike: `inMultiplexer` (in tmux or Rex), `onScreen` (tmux visible or current, or Rex visible) and `placeLabel` (`hub:3.1`, `rex foundry:2.1` or nil). Rex support adds no new reason codes: `visiblePane` and `notInTmux` keep their names and cover Rex.
+
+**Test seams:** `HEADROOM_CLAUDE_DIR`, `HEADROOM_TMUX`, `HEADROOM_TMUX_SOCKET` (adds `-L <name>` to every tmux call; tests use `headroom-test`), `HEADROOM_REX` (the rex CLI; tests use `RexStub` or `/nonexistent/rex`), `HEADROOM_REX_SERVER` (a private Rex server, `unix:///<absolute path>`), `HEADROOM_SUPPORT_DIR`, `HEADROOM_DRY_RUN`, and `HEADROOM_CLAUDE_VERSIONS_GLOB` (so the fake `claude/versions` path is accepted). Opt-in live tests: `HEADROOM_REX_LIVE_TEST=1` (a private Rex server, see above) and `HEADROOM_LIVE_SELFTEST=1` (read-only self-tests against your own system; with a Rex server running they run `rex ls`, `session inspect` and `whoami` against it).
 
 ### What the tests and checks cover
 
 Spike S, an optional check that the helper works in your own Chrome, is described in [spike-s.md](spike-s.md).
 
-- **Core (SysKit, Ownership, Shell, Tmux, Git):**
+- **Core (SysKit, Ownership, Shell, Tmux, Rex, Git):**
   - footprint within 1% of `footprint -p` for 3 of its own child processes;
   - a scan of 800 pids in under 5 ms;
   - the ownership fixture tests (§3) pass, with no pid in two buckets, and agent-browser is attached to session 80876;
-  - tmux parsing works on captured output.
+  - tmux parsing works on captured output;
+  - Rex parsing works on hand-written `rex … --json` fixtures (`Tests/Fixtures/rex-*.json`: tab and pane numbering, zoomed, floating and minimized layers, app and CLI clients), and viewer state it cannot read (an unknown active tab, clients of unknown kind or without an id) counts as visible;
+  - the tmux-or-Rex process walk (§5.1), including tmux inside Rex, a hidden `login`, launchd and ppid cycles;
+  - `RexClient` sends exactly the expected argv to `RexStub`, refuses `server …` and malformed server addresses without running anything, stops discovery at its deadline, and inspects the sessions that hold a claude first even beyond the 64th;
+  - `LiveSysKit` reads argv and env again after a process execs (`exec claude` in a pane shell).
+- **Claude sessions in Rex:** placement (placed, unplaced, stale `REX_BLOCK`, tmux inside Rex), Jump (the call order, the local client, never another device's, the notes and their reasons, and the live fallback without a snapshot) and Undo (by id, by label, a new session and its note when Rex.app cannot show it, recovery after a failed call, Rex not running, dry run) against `RexStub`; the `selftest claude` `rex` check with and without a claude in Rex.
 - **Claude sessions:**
   - live `--selftest claude` lists every session with no false stale entries, and the footprint total is within 2% of a separate `ps`-based sum of the same process trees;
   - 22 transcript tails read in under 20 ms (cold cache);
@@ -782,7 +882,7 @@ Spike S, an optional check that the helper works in your own Chrome, is describe
   - Chrome for Testing: a 320 MB page shows about 336 MB; close with a changed URL returns `changedSkipped`; discard works; whether restore keeps history is recorded (the results are in `Extension/README.md` and `docs/protocol.md`);
   - the host exits when that Chrome quits.
 - **App and actions:**
-  - unit tests for window expansion, locked skipping, every confirm trigger, `sheetMandatory` holding under ⌥, the filter parser, and the Signaller refusing pid ≤ 1, self, ancestors, `.app` and main-Chrome targets, a mismatched start time, and a pgid that contains a pane;
+  - unit tests for window expansion, locked skipping, every confirm trigger, `sheetMandatory` holding under ⌥, the filter parser, and the Signaller refusing pid ≤ 1, self, ancestors, `.app` and main-Chrome targets, a mismatched start time, a pgid that contains a pane, and a Rex pane's process group or a group under a Rex pane process;
   - the close sequence tested against fake-claude dummies that leave a background pgid;
   - a manual check of the selection behaviour against Finder;
   - no row moves while the pointer is over the list;

@@ -1,5 +1,5 @@
-// SPEC §7.6 Jump, steps 4–5: the parts outside tmux (Ghostty focus, clipboard). Behind a protocol so tests
-// record the calls instead of touching the user's desktop.
+// SPEC §7.6 Jump, steps 4–5: the parts outside tmux and Rex (Ghostty focus, clipboard, bringing Rex.app forward).
+// Behind a protocol so tests record the calls instead of touching the user's desktop.
 
 import AppKit
 import CoreServices
@@ -13,8 +13,11 @@ public protocol ClaudeDesktop: Sendable {
     func focusTerminal(windowName: String?) async
     /// Step 5: no tmux client is attached. Copy `attachCommand` and open Ghostty.
     func noClientAttached(attachCommand: String) async
+    /// Rex Jump/Undo: bring Rex.app forward (opening a window if it has none).
+    func focusRex() async
 }
 
+/// The live desktop: Ghostty for sessions in tmux (or in neither), Rex.app for sessions in Rex.
 public struct GhosttyDesktop: ClaudeDesktop {
     public static let bundleId = "com.mitchellh.ghostty"
     public init() {}
@@ -33,6 +36,19 @@ public struct GhosttyDesktop: ClaudeDesktop {
     public func noClientAttached(attachCommand: String) async {
         _ = await Shell.run("/usr/bin/pbcopy", [], timeout: 3, stdin: Data(attachCommand.utf8))
         _ = await Shell.run("/usr/bin/open", ["-a", "Ghostty"], timeout: 5)
+    }
+
+    /// `open -b com.superlogical.rex` launches Rex or sends it a reopen event (which shows a window when it has none),
+    /// with no Apple Events permission needed. Then waits up to 1 s for Rex to be the active app, because Rex's client
+    /// actions (`do session.select`) need the app in front.
+    public func focusRex() async {
+        _ = await Shell.run("/usr/bin/open", ["-b", KnownPaths.rexAppBundleId], timeout: 5)
+        for _ in 0..<20 {
+            if NSRunningApplication.runningApplications(withBundleIdentifier: KnownPaths.rexAppBundleId).first?.isActive == true {
+                return
+            }
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
     }
 
     /// NSRunningApplication.activate brings up Ghostty's last-key window (usually the most active client).
@@ -66,5 +82,8 @@ public final class RecordingDesktop: ClaudeDesktop, @unchecked Sendable {
     }
     public func noClientAttached(attachCommand: String) async {
         lock.withLock { _calls.append("noClient:\(attachCommand)") }
+    }
+    public func focusRex() async {
+        lock.withLock { _calls.append("rex:focus") }
     }
 }

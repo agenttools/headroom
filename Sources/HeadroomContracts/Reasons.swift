@@ -31,8 +31,8 @@ extension Reason {
         switch self {
         case .busy(let s): s.map { "busy (\($0))" } ?? "busy or unknown status"
         case .recentActivity: "active in the last 10 minutes"
-        case .visiblePane: "visible or current tmux pane"
-        case .notInTmux: "not in tmux (Undo cannot put it back into tmux)"
+        case .visiblePane: "visible or current tmux pane, or visible Rex pane"
+        case .notInTmux: "not in tmux or Rex (Undo cannot put it back where it ran)"
         case let .hasBackground(n, b): "has \(n) background process\(n == 1 ? "" : "es") (\(ByteFormat.short(b)))"
         case .noTranscript: "no transcript yet (nothing to resume; closing discards it)"
         case .cwdMissing: "working directory is missing on disk"

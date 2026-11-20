@@ -55,7 +55,14 @@ import HeadroomContracts
             else if let i = s.idleSince { st.append("idle \(Fmt.age(now.timeIntervalSince(i)))") }
             if !s.version.isEmpty { st.append("v\(s.version)") }
             if s.remoteControl { st.append("Remote Control on") }
-            if let t = s.tmux { st.append("tmux \(t.label)\(t.visible ? " (visible)" : "")") } else { st.append("not in tmux") }
+            if let t = s.tmux {
+                st.append("tmux \(t.label)\(t.visible ? " (visible)" : "")")
+            } else if let r = s.rex {
+                // An unplaced Rex pane ("foundry:?") is visible by rule: unknown counts as on screen (SPEC §5).
+                st.append("Rex \(r.label)\(r.windowLabel.map { " · " + $0 } ?? "")\(r.visible ? " (visible)" : "")")
+            } else {
+                st.append(ClaudeSession.notPlacedLabel)
+            }
             text(st.joined(separator: " · "), font: Theme.small)
             if let p = s.lastPrompt { labeled("Last prompt", p) }
             if let a = s.lastAssistant { labeled("Last reply", a) }
@@ -72,6 +79,15 @@ import HeadroomContracts
                 captureBox = box
                 Task { [weak self] in
                     let out = await peek?.capturePane(t.paneId)
+                    self?.captureBox?.stringValue = out ?? "(pane not available)"
+                }
+            } else if let r = s.rex {
+                // Read-only `rex capture … --trim`, last 60 lines (the CLI has no line count).
+                heading("Rex pane \(r.shortBlockId) (read-only)")
+                let box = codeBox("…")
+                captureBox = box
+                Task { [weak self] in
+                    let out = await peek?.captureRexBlock(sessionId: r.sessionId, blockId: r.blockId)
                     self?.captureBox?.stringValue = out ?? "(pane not available)"
                 }
             }
@@ -177,7 +193,7 @@ import HeadroomContracts
                           backing: .buffered, defer: false)
         super.init()
         let title = NSTextField.label("Recently Closed", font: NSFont.systemFont(ofSize: 14, weight: .semibold))
-        let sub = NSTextField.label("Kept for 7 days. Tabs reopen in Chrome; sessions reopen in tmux with claude --resume.",
+        let sub = NSTextField.label("Kept for 7 days. Tabs reopen in Chrome; sessions reopen in tmux or Rex with claude --resume.",
                                     font: Theme.small, color: .secondaryLabelColor)
         let scroll = NSScrollView()
         let clip = FlippedClip(); clip.drawsBackground = false

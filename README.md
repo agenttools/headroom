@@ -4,11 +4,11 @@ Headroom shows what is using your Mac's memory when you work with many Chrome ta
 sessions at once, and lets you close what you no longer need. It lists Chrome tabs, Claude Code
 sessions and the dev servers that sessions left running after they ended, sorted by memory footprint.
 You select rows and close them, and you can Undo: tabs reopen (with their history when the helper extension is
-installed), and sessions resume in a new tmux window.
+installed), and sessions resume in a new tmux window or Rex tab, where they ran.
 
 It is a native macOS Dock app (Swift 6, AppKit, SwiftPM), a `headroom` CLI that agents can use too, and a small
 Chrome helper extension for memory per tab. It is for people who keep many Claude Code sessions open, usually in
-tmux, next to a busy Chrome.
+tmux or Rex, next to a busy Chrome.
 
 **Status:** a personal tool, shared as it is. It runs on macOS on Apple Silicon only. You build it from source:
 there are no binary releases, and the app is not notarized (it is signed locally, ad-hoc or with a self-signed
@@ -28,7 +28,10 @@ Wire protocol: [`docs/protocol.md`](docs/protocol.md). CLI: [`docs/cli.md`](docs
 - Google Chrome in `/Applications` for the Chrome section, and Claude Code (`~/.claude`) for the sessions.
 - Optional:
   - tmux at `/opt/homebrew/bin/tmux` (the Homebrew path) for session locations, Jump and Undo of sessions;
-  - Ghostty, so that Jump brings the right terminal window forward;
+  - Rex, for the same with sessions that run in Rex: the `rex` CLI at `~/.local/bin/rex`, or the one inside
+    `/Applications/Rex.app` or `Rex Beta.app` (`HEADROOM_REX` sets another path). Built against Rex 0.1.0-preview.20 (API revision 16);
+    see [tmux and Rex](#tmux-and-rex);
+  - Ghostty, so that Jump brings the right terminal window forward (sessions in tmux);
   - AeroSpace (`install.sh` can add a rule so the Headroom window floats);
   - `openssl` for `scripts/make-signing-cert.sh` (the system LibreSSL works);
   - Bun and Chrome for Testing, only for the end-to-end tests in `Tests/e2e-chrome/`.
@@ -86,8 +89,11 @@ run without asking. Every script prints what it did.
 5. **Grant Automation** (optional; for the tab list without the extension, and for jumping to the exact
    Ghostty window). Headroom never asks on its own:
    - **Chrome:** click **Allow…** on the Chrome card in Headroom.
-   - **Ghostty:** macOS asks the first time you Jump to a Claude session.
+   - **Ghostty:** macOS asks the first time you Jump to a Claude session in tmux.
    - To change either later: System Settings ▸ Privacy & Security ▸ Automation ▸ Headroom.
+
+   Rex needs no Automation. To let Jump switch Rex to another session, turn on **Remote Control** in Rex (it is off
+   by default).
 
 After an update, run `scripts/build.sh && scripts/install.sh` again. Then click the reload icon on the
 helper in `chrome://extensions` if the extension changed.
@@ -110,17 +116,51 @@ prompts. Per-tab memory needs the extension. The tab list and closing tabs need 
 | ⌃⌫ | Sleep the tab (discard it; extension only) |
 | ⌘Z / ⇧⌘Z | Undo / redo the last close batch |
 | ⌘Y | Recently Closed (today's batches, with Restore) |
-| ↩ or double-click | Jump to the tab or the tmux pane |
+| ↩ or double-click | Jump to the tab, the tmux pane or the Rex pane |
 | Space | Peek (details; follows ↑/↓) |
 | ⌘C | Copy URLs, resume commands (`cd '<cwd>' && claude --resume <id>`) or a leftover's command |
 | ⌘⇧R / ⌘O | Reveal the cwd in Finder / open the transcript |
-| ⌘F | Filter, for example `idle>2h !busy`, `>500mb`, `site:github.com`, `tmux:hub`, `is:leftover` |
+| ⌘F | Filter, for example `idle>2h !busy`, `>500mb`, `site:github.com`, `tmux:hub`, `rex:foundry`, `is:leftover` |
 | ⌘R | Refresh now |
 | ⌘1 / ⌘2 / ⌘3 | Show All / Chrome / Claude |
 | ⌘W | Close Headroom's window (this quits Headroom; it never closes an item) |
 
 A fast sweep: ⌘F `idle>2h !busy`, then ⌘A, then ⌫. Leftovers cannot be undone, so they always ask first.
 Locked rows (Chrome itself, the session that launched Headroom) can be selected for Peek but are never closed.
+
+## tmux and Rex
+
+Headroom shows where each Claude Code session runs, and Jump and Undo go back there. It understands two terminal
+multiplexers: tmux and Rex. tmux works as it always did.
+
+- **Where:** `hub:3.1` (tmux `session:window.pane`) or `rex foundry:2.1` (Rex `session:tab.pane`, both numbers
+  from 1). Headroom decides from the process tree, and the nearest multiplexer wins: a claude in tmux inside a Rex
+  pane is in tmux. For Rex it reads the claude's own `REX_BLOCK` and `REX_SESSION`, and runs `rex ls` and
+  `rex session inspect` only when a claude runs in Rex. It never starts a Rex server.
+- **Visible:** a Rex pane is visible when Rex.app is attached to its session, the pane's tab is the session's
+  active tab, and the pane is drawn (not minimized, and not hidden behind a zoomed pane). Rex cannot tell Headroom
+  which session the app is showing, so every such pane counts. A pane Headroom cannot place (shown as `foundry:?`)
+  also counts as visible, and so does a pane whose active tab or attached apps Rex reports in a way Headroom does
+  not understand. So in Rex, more sessions ask before closing than in tmux, never fewer.
+- **Jump:** Rex focuses the pane, Rex.app comes forward, and Headroom asks Rex.app on this Mac to show the session
+  (never Rex on another device). That last step needs **Remote Control** turned on in Rex. When it does not work, a
+  toast tells you which session to open and why (for example, Remote Control is off, or Rex.app is not connected yet).
+- **Undo:** a new tab in the same Rex session (or a new session, if it is gone) runs `claude --resume <id>`. A new
+  session is shown as in Jump; if Rex.app cannot be asked to show it, the Undo toast (and `headroom undo`) says
+  "Resumed in the new Rex session “<name>”; open it in Rex." and why. If Rex is not running, Undo fails and the
+  session stays in Recently Closed: open Rex, then Undo again.
+
+Limits of the Rex support:
+
+- It was built against Rex 0.1.0-preview.20 (API revision 16). Only the read-only Rex calls were run against a real
+  Rex server; Jump and Undo were tested against a fake `rex`. A newer Rex may report its layout differently:
+  `headroom selftest claude` checks that every claude in Rex is placed, and prints the Rex version.
+- With several Rex.app windows, or a tab torn off into its own window, a pane that is on screen can show as not
+  visible. This is not checked yet.
+- Headroom reads only your own Rex server. A claude in a pane of another Rex server (for example a private test
+  server) shows as `<session>:?` and is protected like a visible pane.
+- Headroom does not read Rex pane titles. A session in tmux without a user-set name or an AI title is titled from
+  its tmux pane title; a session in Rex in that case falls back to its other names, or to its project folder.
 
 ## Screenshots
 
@@ -168,12 +208,15 @@ Incognito tab titles are replaced with `(incognito tab)`, and incognito URLs are
 What Headroom reads, all on your Mac:
 
 - **Processes:** memory footprint, parent, process group, path and arguments of each process. From each process's
-  environment it keeps only `CLAUDE_*` keys (minus any key that looks like a credential), `TMUX` and `TMUX_PANE`.
+  environment it keeps only `CLAUDE_*` keys (minus any key that looks like a credential), `TMUX`, `TMUX_PANE`,
+  `REX_SESSION` and `REX_BLOCK` (Rex session and pane ids).
 - **Claude Code:** `~/.claude/sessions/*.json`, and the end of each session's transcript in `~/.claude/projects/`
   (title, last prompt, last assistant line, away summary). It never writes there.
-- **tmux and git:** the tmux pane and client lists, and each session folder's `.git/HEAD`. Peek on a session shows
-  the last 15 lines of its tmux pane, and Peek on a leftover runs `lsof` for its listening ports. `git status` runs
-  only for `suggest --ask`.
+- **tmux, Rex and git:** the tmux pane and client lists; when a Claude session runs in Rex, the Rex session list and
+  each Rex session's tabs, panes and attached apps (`rex ls`, `rex session inspect`); and each session folder's
+  `.git/HEAD`. Headroom never starts a Rex server. Peek on a session shows the last 15 lines of its tmux pane or the
+  last 60 lines of its Rex pane, and Peek on a leftover runs `lsof` for its listening ports. `git status` runs only
+  for `suggest --ask`.
 - **Chrome:** tab titles, URLs, windows and the renderer process of each frame, through the helper extension, or
   titles and URLs through AppleScript if you allowed Automation. Never page content, cookies or history.
 
@@ -207,6 +250,12 @@ To forget the signing identity: open Keychain Access, find "Headroom Local Signi
 - **Two "Headroom Local Signing" identities**: `build.sh` uses the first one. Pin one with
   `SIGN_ID=<sha1> scripts/build.sh` (`security find-identity -p codesigning` lists them).
 - **Headroom's own cost**: the footer shows the app, the host and the helper extension's memory.
+- **Jump into Rex brings Rex forward but shows another session**: the toast names the Rex session to open and says
+  why. Usually Remote Control is off: turn it on in Rex. If it says Rex.app is not connected, Jump again once Rex.app
+  has a window open.
+- **Undo says "Rex is not running"**: open Rex, then Undo again. Headroom never starts a Rex server itself.
+- **A session in Rex shows as `<session>:?` or `not in tmux or Rex`**: run `headroom selftest claude`. Its `rex`
+  check lists the claudes it could not place, and those without `REX_BLOCK`/`REX_SESSION` in their environment.
 
 ---
 
@@ -227,8 +276,8 @@ To forget the signing identity: open Keychain Access, find "Headroom Local Signi
 | `Extension/` | MV3 extension | – |
 | `scripts/` | build, install, signing | – |
 
-Test fixtures: `Tests/Fixtures/` (a `ps` capture in `ps.txt` and `psargs.txt` with `ownership-overlay.json`, and
-captured tmux output), used by the Core and Claude tests.
+Test fixtures: `Tests/Fixtures/` (a `ps` capture in `ps.txt` and `psargs.txt` with `ownership-overlay.json`,
+captured tmux output, and hand-written `rex … --json` output in `rex-*.json`), used by the Core and Claude tests.
 
 ### Scripts
 
@@ -281,7 +330,10 @@ With a scratch `HOME`, the scripts write only inside it. They refuse to edit the
 
 `HEADROOM_DRY_RUN=1` in every dev and test run. Test signalling only on dummies you spawned; test Chrome
 behaviour only in Chrome for Testing with a scratch profile; test tmux only with `HEADROOM_TMUX_SOCKET=headroom-test`.
-See SPEC §11 and `Sources/HeadroomContracts/Env.swift` for all test seams.
+Test Rex only with `RexStub` (a fake `rex` that never reaches a server; `swift test` uses it by default), or with
+`HEADROOM_REX_LIVE_TEST=1`, which starts and stops its own private Rex server. That test leaves empty `start.lock`
+files in `~/Library/Application Support/rex/servers` and prints them. Never point `HEADROOM_REX_SERVER` at your own
+Rex server's socket. See SPEC §11 and `Sources/HeadroomContracts/Env.swift` for all test seams.
 
 ## License
 

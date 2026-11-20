@@ -1,7 +1,8 @@
 // `headroom undo [--last | <id>] [--list] [--dry-run] [--json]`
 //
 // Restores from the Recently Closed store that the app and the CLI share (closed.jsonl, last 7 days):
-// tabs reopen (sessions.restore, else by URL), sessions resume with `claude --resume` in a new tmux window.
+// tabs reopen (sessions.restore, else by URL), sessions resume with `claude --resume` in a new tmux window or
+// Rex tab, where they ran.
 // Leftovers cannot be undone.
 //
 //   undo | undo --last     the newest close batch that still has something restorable
@@ -35,6 +36,9 @@ struct UndoResultJSON: Codable, Sendable {
     let dryRun: Bool
     let message: String?
     let results: [RecordResultJSON]
+    /// Notes for the user (additive; omitted when there are none): a session resumed in a new Rex session that
+    /// Rex.app could not be asked to show.
+    var notes: [String]? = nil
 }
 
 struct RecentJSON: Codable, Sendable {
@@ -95,10 +99,15 @@ enum UndoCommand {
         let restorable = picked.filter(\.restorable)
         let ok = !restorable.isEmpty && restorable.allSatisfy { outcomes[$0] == .done || outcomes[$0] == .dryRun }
         let anyOK = restorable.contains { outcomes[$0] == .done || outcomes[$0] == .dryRun }
+        // A new Rex session Rex.app could not be asked to show. Only a session this undo reopened (.done) can have
+        // set the notes, so a run without one never prints an older note.
+        let notes = restorable.contains { $0.kind == "session" && outcomes[$0] == .done }
+            ? ((ctx.world as? LiveWorld)?.reopenNotes ?? []) : []
         if json {
             let r = UndoResultJSON(schema: ListSnapshot.currentSchema, command: "undo",
                                    status: ok ? "restored" : anyOK ? "partial" : "nothing",
-                                   dryRun: ctx.env.dryRun, message: nil, results: results)
+                                   dryRun: ctx.env.dryRun, message: nil, results: results,
+                                   notes: notes.isEmpty ? nil : notes)
             let c = JSONOut.write(r, io)
             return c == Exit.ok ? (ok ? Exit.ok : Exit.error) : c
         }
@@ -114,8 +123,9 @@ enum UndoCommand {
             let mark = (outcomes[r] == .done || outcomes[r] == .dryRun) ? "✓" : "✗"
             io.out("  \(mark) \(Text.col(r.kind, 8)) \(Text.col(res.outcome, 30)) \(Text.trunc(r.title, 60))")
         }
+        for n in notes { io.out(n) }
         if picked.contains(where: { $0.kind == "session" }) && !ctx.env.dryRun {
-            io.out("Sessions reopen in a new tmux window with claude --resume (an unsent draft is lost).")
+            io.out("Sessions reopen in a new tmux window or Rex tab with claude --resume (an unsent draft is lost).")
         }
         return ok ? Exit.ok : Exit.error
     }

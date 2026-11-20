@@ -206,6 +206,14 @@ import HeadroomCore
         #expect(WhereLabel.make(tmux: loc, project: "compass", branch: "main", worktree: nil) == "hub:3.1 › compass ⎇ main")
         #expect(WhereLabel.make(tmux: nil, project: "compass", branch: "b", worktree: "bubbly") == "compass ⎇ bubbly")
         #expect(WhereCache.project(cwd: "/x/compass/.claude/worktrees/bubbly", head: nil) == "compass")
+        // Rex: "rex <session>:<tab>.<pane>"; "?" when the block's place is unknown.
+        let r = RexLoc(blockId: "block:x", sessionId: "session:0190-abcdef", sessionLabel: "foundry", windowId: "window:w",
+                       windowLabel: "api reference", windowIndex: 2, paneIndex: 1, visible: true)
+        #expect(WhereLabel.make(tmux: nil, rex: r, project: "compass", branch: "main", worktree: nil)
+                == "rex foundry:2.1 › compass ⎇ main")
+        let unplaced = RexLoc(blockId: "block:x", sessionId: "session:0190-abcdef", sessionLabel: "", visible: true)
+        #expect(WhereLabel.make(tmux: nil, rex: unplaced, project: "compass", branch: nil, worktree: nil)
+                == "rex …abcdef:? › compass")
     }
 }
 
@@ -376,6 +384,7 @@ import HeadroomCore
         env.claudeDir = scratch.path + "/.claude"
         env.supportDir = scratch.path + "/support"
         env.tmuxPath = "/nonexistent/tmux"
+        env.rexPath = "/nonexistent/rex"
         let src = ClaudeSource(env: env, desktop: RecordingDesktop(), watch: false)
         src.cpuSettle = 0
         let panes = f.tmuxPanes
@@ -418,7 +427,8 @@ import HeadroomCore
 
     func env(_ d: ScratchDir, dryRun: Bool) -> HeadroomEnv {
         var e: [String: String] = ["HOME": d.path, "HEADROOM_CLAUDE_DIR": d.path + "/.claude", "HEADROOM_TMUX": Self.tmuxPath!,
-                                   "HEADROOM_TMUX_SOCKET": Self.socket, "HEADROOM_SUPPORT_DIR": d.path + "/support"]
+                                   "HEADROOM_TMUX_SOCKET": Self.socket, "HEADROOM_SUPPORT_DIR": d.path + "/support",
+                                   "HEADROOM_REX": "/nonexistent/rex"]
         if dryRun { e["HEADROOM_DRY_RUN"] = "1" }
         return HeadroomEnv(environment: e)
     }

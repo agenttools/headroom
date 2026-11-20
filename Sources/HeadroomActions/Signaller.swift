@@ -3,8 +3,9 @@
 // A signal is sent only to:
 //   (a) .session            a live claude pid whose start time and /claude/versions/ path still match;
 //   (b) .group              a recorded background unit or leftover group (kill(-pgid)) that passes the §3
-//                           exclusions again, contains no live claude, no tmux server, no pane_pid and is not
-//                           a pane's process group, and whose recorded members still have their startSec;
+//                           exclusions again, contains no live claude, no tmux server, no pane_pid, no Rex server
+//                           or Rex pane process, and is not a tmux or Rex pane's process group (nor runs under
+//                           any of these), and whose recorded members still have their startSec;
 //   (c) .automationBrowser  a Chrome instance that is headless / remote-debugging / non-default
 //                           --user-data-dir, is not a host's browserPid nor the main browser, and is owned
 //                           by (a) or (b). SIGTERM only, browser pid only.
@@ -17,6 +18,7 @@
 import Darwin
 import Foundation
 import HeadroomContracts
+import HeadroomCore
 
 public enum SignalTarget: Sendable, Hashable, Codable, CustomStringConvertible {
     case session(ProcKey)
@@ -78,10 +80,14 @@ public struct Signaller: Sendable {
     public let journal: Journal?
     /// argv lookup for §3 exclusions (SysKit.args, cached per key).
     public let args: @Sendable (ProcKey) -> ProcArgs?
+    /// Parent of a pid the table does not have (SysKit.parentPid): finds Rex pane shells under Rex's root-owned
+    /// `login`, which scan() leaves out. nil = only the table's own parents.
+    public let parentPid: @Sendable (Int32) -> Int32?
 
     public init(env: HeadroomEnv, sender: any SignalSender = DarwinSignalSender(), journal: Journal? = nil,
-                args: @escaping @Sendable (ProcKey) -> ProcArgs?) {
-        self.env = env; self.sender = sender; self.journal = journal; self.args = args
+                args: @escaping @Sendable (ProcKey) -> ProcArgs?,
+                parentPid: @escaping @Sendable (Int32) -> Int32? = { _ in nil }) {
+        self.env = env; self.sender = sender; self.journal = journal; self.args = args; self.parentPid = parentPid
     }
 
     static let excludedArgv0 = ["tmux", "limactl", "colima", "docker", "ssh-agent"]
@@ -146,6 +152,12 @@ public struct Signaller: Sendable {
             if !anyRecordedAlive { return .mismatch }
             let panePgids = Set(c.panePids.compactMap { table.byPid[$0]?.pgid })
             if panePgids.contains(pgid) { return .refused("a tmux pane's process group") }
+            // Rex servers and each Rex pane's first process (the shell under `login`, or a `rex run` command),
+            // from the live table alone: no rex call, so it holds even when Rex discovery failed.
+            let rexTopo = RexProcess.topology(in: table, argv: { args($0)?.argv }, parentPid: parentPid)
+            if Set(rexTopo.blockRoots.compactMap { table.byPid[$0]?.pgid }).contains(pgid) {
+                return .refused("a Rex pane's process group")
+            }
             let memberPids = Set(members.map(\.pid))
             // Allowed .app members: recorded automation browsers and their descendants.
             var autoPids: Set<Int32> = []
@@ -170,11 +182,15 @@ public struct Signaller: Sendable {
                         return .refused("group contains \(a0) (\(m.pid))")
                     }
                 }
-                // ppid chain outside the group must not pass through tmux, a pane or a live claude.
+                if rexTopo.servers.contains(m.pid) { return .refused("group contains the Rex server (\(m.pid))") }
+                if rexTopo.blockRoots.contains(m.pid) { return .refused("group contains a Rex pane process (\(m.pid))") }
+                // ppid chain outside the group must not pass through tmux, a pane, a live claude or Rex.
                 for anc in table.ancestors(of: m.pid) where !memberPids.contains(anc) {
                     guard let p = table.byPid[anc] else { continue }
                     if anc == c.selfPid { return .refused("group descends from Headroom") }
                     if let r = livePaneOrClaude(p) { return .refused("group runs under \(r)") }
+                    if rexTopo.servers.contains(anc) { return .refused("group runs under the Rex server (\(anc))") }
+                    if rexTopo.blockRoots.contains(anc) { return .refused("group runs under a Rex pane process (\(anc))") }
                 }
             }
             return nil

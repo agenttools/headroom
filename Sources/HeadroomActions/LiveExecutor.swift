@@ -12,6 +12,8 @@ import HeadroomChrome
 public protocol PeekProvider: Sendable {
     /// Read-only `tmux capture-pane -p -t <pane> -S -15`.
     func capturePane(_ paneId: String) async -> String?
+    /// Read-only `rex capture -s <session> -b <block> --trim`, last 60 lines; nil when unavailable.
+    func captureRexBlock(sessionId: String, blockId: String) async -> String?
     /// `lsof -nP -iTCP -sTCP:LISTEN -a -p <pids>` lines (run only when Peek opens).
     func listeningPorts(_ pids: [Int32]) async -> [String]
 }
@@ -34,6 +36,8 @@ public final class LiveExecutor: ActionExecutor, PeekProvider, @unchecked Sendab
         self.env = env; self.sys = sys; self.tmux = tmux; self.claude = claude; self.chrome = chrome
         journal = Journal(env: env, source: source)
         recent = RecentlyClosed(env: env)
+        // Never given a cadence: tmux and Rex caches keep TTL 0, so freshSessions re-derives pane visibility (tmux
+        // visible/current, Rex visible or unplaced) from fresh state right before SIGTERM.
         let world = LiveWorld(env: env, sys: sys, tmux: tmux, claude: claude, chrome: chrome)
         let backend = CloseBackend(
             sys: sys, chrome: chrome,
@@ -109,11 +113,23 @@ public final class LiveExecutor: ActionExecutor, PeekProvider, @unchecked Sendab
         }
     }
 
+    /// Jump, plus the note a Rex jump returns when it could not finish the switch (no pane found, or the app refused
+    /// `session.select`, e.g. Remote Control is off). tmux and tabs never have a note.
+    public func jumpNote(_ id: ItemID) async -> String? {
+        if case .session(let k) = id { return await claude.jumpNote(k) }
+        await jump(id)
+        return nil
+    }
+
     public func recentlyClosed() async -> [ClosedRecord] { recent.list() }
 
     // MARK: PeekProvider
 
     public func capturePane(_ paneId: String) async -> String? { await tmux.capture(pane: paneId, lines: 15) }
+
+    public func captureRexBlock(sessionId: String, blockId: String) async -> String? {
+        await claude.rex.capture(session: sessionId, block: blockId, lines: 60)
+    }
 
     public func listeningPorts(_ pids: [Int32]) async -> [String] {
         guard !pids.isEmpty else { return [] }

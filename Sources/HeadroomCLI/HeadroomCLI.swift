@@ -22,7 +22,7 @@ enum HeadroomCLI {
                app would confirm unless --force-confirm. Busy sessions also need --include-busy.
                Asks y/N on a terminal; otherwise needs --yes.
       undo     [--last | <id>] [--list] [--dry-run] [--json]
-               Restore from Recently Closed (reopen tab / claude --resume in tmux).
+               Restore from Recently Closed (reopen tab / claude --resume in tmux or Rex).
       selftest [sys|ownership|claude|chrome]
                Read-only checks of the process scan, ownership, Claude sessions and Chrome.
 

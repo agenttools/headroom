@@ -26,7 +26,7 @@ let package = Package(
     targets: [
         // Shared types and protocols every other module builds on (SPEC §11).
         .target(name: "HeadroomContracts"),
-        // SysKit, Ownership, Shell, Tmux, Git.
+        // SysKit, Ownership, Shell, Tmux, Rex, Git.
         .target(name: "HeadroomCore", dependencies: ["HeadroomContracts"]),
         // Sessions, transcript tails, ClaudeSource.
         .target(name: "HeadroomClaude", dependencies: ["HeadroomContracts", "HeadroomCore"]),

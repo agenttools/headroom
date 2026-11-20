@@ -43,8 +43,10 @@ public enum ProcArgsParser {
     /// Words that mark an environment key as a possible secret. Such keys are never kept, even under CLAUDE_*.
     static let secretMarkers = ["TOKEN", "KEY", "SECRET", "PASS", "AUTH", "CRED", "COOKIE", "SESSION_ACCESS"]
 
-    /// Keys kept outside the CLAUDE_* prefix (none of them carry secrets).
-    public static let extraKeptKeys: Set<String> = ["TMUX_PANE", "TMUX"]
+    /// Keys kept outside the CLAUDE_* prefix (none of them carry secrets). REX_SESSION/REX_BLOCK place a claude in
+    /// Rex (full ids, trusted only when its ppid chain reaches a Rex server). REX_SERVER (a socket path),
+    /// REX_BIN_DIR and TERM_PROGRAM stay dropped.
+    public static let extraKeptKeys: Set<String> = ["TMUX_PANE", "TMUX", "REX_SESSION", "REX_BLOCK"]
 
     /// True if SysKit keeps `key`: CLAUDE_* (minus anything that looks like a credential) plus `extraKeptKeys`.
     public static func keeps(_ key: String) -> Bool {

@@ -16,8 +16,17 @@ private func titles(_ s: [Suggestion], _ v: Verdict) -> Set<String> { Set(s.filt
 
 // MARK: synthetic worlds
 
+/// A Rex location in session "foundry" (tab 2, pane 1); `placed: false` is what discovery failure gives (visible).
+private func rexLoc(_ pid: Int32, visible: Bool, placed: Bool = true) -> RexLoc {
+    RexLoc(blockId: "block:0190bbbb-0000-7000-8000-\(String(format: "%012x", Int(pid)))",
+           sessionId: "session:0190bbbb-0000-7000-8000-000000000001", sessionLabel: "foundry",
+           windowId: placed ? "window:0190bbbb-0000-7000-8000-000000000002" : nil, windowLabel: placed ? "api" : nil,
+           windowIndex: placed ? 2 : nil, paneIndex: placed ? 1 : nil, visible: visible)
+}
+
 private func session(_ pid: Int32, idleHours: Double, mb: Double = 300, tmux: Bool = true, busy: Bool = false,
-                      visible: Bool = false, bg: Bool = false, status: String? = nil, transcript: Bool = true) -> ClaudeSession {
+                      visible: Bool = false, bg: Bool = false, status: String? = nil, transcript: Bool = true,
+                      rex: RexLoc? = nil) -> ClaudeSession {
     let key = ProcKey(pid: pid, startSec: 1_700_000_000 + Int(pid))
     let last = now.addingTimeInterval(-idleHours * 3600)
     let unit = LinkedUnit(root: ProcKey(pid: pid + 1, startSec: key.startSec), pgid: pid + 1, command: "bun run dev",
@@ -28,7 +37,7 @@ private func session(_ pid: Int32, idleHours: Double, mb: Double = 300, tmux: Bo
         startedAt: last.addingTimeInterval(-600),
         tmux: tmux ? TmuxLoc(paneId: "%\(pid)", session: "t", windowName: "w", windowIndex: Int(pid % 100), paneIndex: 0,
                              visible: visible, current: visible) : nil,
-        selfFootprint: .mb(mb), background: bg ? [unit] : [])
+        rex: rex, selfFootprint: .mb(mb), background: bg ? [unit] : [])
 }
 
 private func tab(_ id: Int, win: Int, idx: Int, minutesAgo: Double, mb: Double?, active: Bool = false,
@@ -88,6 +97,14 @@ private func world(sessions: [ClaudeSession] = [], tabs: [ChromeTab] = [], lefto
         #expect(!s.contains { $0.verdict == .keep })
     }
 
+    /// The mock Rex rows are busy, visible or idle under 2 h, so suggest output is the same as without them.
+    @Test func mockRexSessionsAreNotCandidates() {
+        #expect(Set(s.compactMap(\.title)).isDisjoint(with: ["rex release notes", "rex docs pass", "rex billing spike"]))
+        #expect(!s.contains { $0.reason.contains("Undo resumes it in Rex") })
+        let draft = s.first { $0.title == "newsletter draft" }!
+        #expect(draft.reason.contains("not in tmux or Rex"))
+    }
+
     @Test func safeItemsAreExactlyWhatCloseAcceptsWithoutForce() {
         let safe = Set(s.filter { $0.verdict == .safe }.map(\.id))
         #expect(safe.count == 15)
@@ -141,6 +158,35 @@ private func world(sessions: [ClaudeSession] = [], tabs: [ChromeTab] = [], lefto
         let s = run(world(sessions: [session(100, idleHours: 5, tmux: false), session(200, idleHours: 5, transcript: false)]))
         #expect(s.allSatisfy { $0.verdict == .confirm })
         #expect(s.count == 2)
+    }
+
+    @Test func hiddenRexSessionIsSafeAndUndoResumesItInRex() {
+        let s = run(world(sessions: [session(100, idleHours: 5, tmux: false, rex: rexLoc(100, visible: false)),
+                                     session(200, idleHours: 5)]))
+        #expect(s.count == 2)
+        #expect(s.allSatisfy { $0.verdict == .safe })
+        let rex = s.first { $0.title == "s100" }!
+        #expect(rex.reason.contains("not on screen"))
+        #expect(!rex.reason.contains("not in tmux"))
+        #expect(rex.reason.hasSuffix("; Undo resumes it in Rex"))
+        #expect(s.first { $0.title == "s200" }!.reason.hasSuffix("; Undo resumes it in tmux"))
+    }
+
+    /// Visible Rex panes, and Rex panes Headroom could not place (fail-closed: visible), are never suggested.
+    @Test func visibleOrUnplacedRexSessionsAreSkipped() {
+        let s = run(world(sessions: [
+            session(100, idleHours: 5, tmux: false, rex: rexLoc(100, visible: true)),
+            session(200, idleHours: 5, tmux: false, rex: rexLoc(200, visible: true, placed: false)),
+            session(300, idleHours: 5, tmux: false, rex: rexLoc(300, visible: false)),
+        ]))
+        #expect(s.map(\.title) == ["s300"])
+    }
+
+    @Test func sessionInNeitherMultiplexerSaysSo() {
+        let s = run(world(sessions: [session(100, idleHours: 5, tmux: false)]))
+        #expect(s.count == 1 && s[0].verdict == .confirm)
+        #expect(s[0].reason.hasPrefix("idle 5h, not busy, not in tmux or Rex, no background processes; asks first: "))
+        #expect(s[0].reason.contains("not in tmux or Rex (Undo cannot put it back where it ran)"))
     }
 
     @Test func launcherIsNeverSuggested() {

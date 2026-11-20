@@ -285,7 +285,7 @@ public enum SelectionSummary {
                 case .leftover: short = "leftover"
                 case .visiblePane: short = "visible pane"
                 case .recentActivity: short = "recently active"
-                case .notInTmux: short = "not in tmux"
+                case .notInTmux: short = "not in tmux or Rex"
                 case .hasBackground: short = "has background"
                 default: short = first.code
                 }

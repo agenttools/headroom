@@ -49,7 +49,9 @@ enum ListTable {
         case "tab":
             whereText = r.incognito == true ? "incognito" : (r.url.flatMap { URL(string: $0)?.host } ?? r.url ?? "")
         case "session":
-            whereText = (r.tmux ?? "not in tmux") + (r.cwd.map { "  " + Text.tilde($0, home: home) } ?? "")
+            // tmux "hub:3.1", Rex "rex foundry:2.1" (ListItem.tmux stays tmux-only), else "not in tmux or Rex".
+            whereText = (r.tmux ?? r.rex.map { "rex " + $0 } ?? ClaudeSession.notPlacedLabel)
+                + (r.cwd.map { "  " + Text.tilde($0, home: home) } ?? "")
         default:
             whereText = r.cwd.map { Text.tilde($0, home: home) } ?? ""
         }

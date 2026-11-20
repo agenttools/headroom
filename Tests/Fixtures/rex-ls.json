@@ -1,0 +1,6 @@
+{
+  "sessions": [
+    {"session_id": "session:0190bbbb-0000-7000-8000-00000000000a", "label": "alpha"},
+    {"session_id": "session:0190bbbb-0000-7000-8000-00000000000b", "label": "beta"}
+  ]
+}

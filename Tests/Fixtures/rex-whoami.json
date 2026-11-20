@@ -1,0 +1,15 @@
+{
+  "account": "tester",
+  "api_revision": 16,
+  "endpoint": "unix:///tmp/hrx-fixture/s.sock",
+  "exit_empty": false,
+  "host_id": "00000000-0000-4000-8000-0000000000aa",
+  "instance_id": "00000000-0000-4000-8000-0000000000bb",
+  "log_path": "/tmp/hrx-fixture/server.log",
+  "pid": 4242,
+  "principal": {"kind": "peer", "uid": 501},
+  "rex_version": "0.1.0-preview.20",
+  "session_count": 2,
+  "started_at": "2026-11-19T08:00:00.123456Z",
+  "tailscale": null
+}

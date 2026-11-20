@@ -10,6 +10,7 @@ import HeadroomContracts
 
 public enum ListScope: String, Sendable, CaseIterable, Codable { case all, chrome, claude }
 public enum ChromeGrouping: String, Sendable, CaseIterable, Codable { case window, none }
+/// `.tmux` groups by tmux session or Rex session (the raw value and case order are persisted; keep them).
 public enum ClaudeGrouping: String, Sendable, CaseIterable, Codable { case none, tmux }
 public enum SortColumn: String, Sendable, CaseIterable, Codable {
     case memory, name, location, state, age, pid, rss, cpu, lastActive
@@ -34,7 +35,7 @@ public enum ListSection: String, Sendable, CaseIterable, Codable { case chrome, 
 public enum RowKind: String, Sendable, Codable {
     /// CHROME / CLAUDE CODE / LEFTOVERS: floating group rows, never selectable.
     case section
-    /// tmux-session grouping header inside CLAUDE CODE (not selectable).
+    /// tmux or Rex session grouping header inside CLAUDE CODE (not selectable).
     case subgroup
     case window, tab, chromeItself, overhead, session, process, leftover
     /// The first-run Chrome card (§8.6).
@@ -341,15 +342,12 @@ public enum ListModel {
         if !q.isEmpty { rows = rows.filter { $0.subject.map(q.matches) ?? false } }
         var kids: [Row]
         if o.claudeGrouping == .tmux {
-            let groups = Dictionary(grouping: rows) { r -> String in
-                sessions.first { $0.itemID == r.item }?.tmux?.session ?? ""
-            }
-            kids = groups.map { name, rs in
-                var g = Row(id: "tmux:\(name)", item: nil, kind: .subgroup, section: .claude,
-                            title: name.isEmpty ? "Not in tmux" : "tmux: \(name)",
+            let groups = Dictionary(grouping: rows) { r in SessionGroup(sessions.first { $0.itemID == r.item }) }
+            kids = groups.map { key, rs in
+                var g = Row(id: key.id, item: nil, kind: .subgroup, section: .claude, title: key.title,
                             badge: Fmt.plural(rs.count, "session"), tone: .muted,
                             bytes: rs.reduce(0) { $0 + ($1.bytes ?? 0) }, children: rs, selectable: false)
-                g.pinRank = name.isEmpty ? 1 : 0
+                g.pinRank = key.pinRank
                 return g
             }
         } else {
@@ -365,15 +363,33 @@ public enum ListModel {
                    badge: badge, bytes: w.claude.sessionsTotal, children: kids, selectable: false)
     }
 
+    /// The `.tmux` grouping key. Row ids are persisted (UserDefaults `expanded`): "tmux:<name>" for a tmux session,
+    /// "rex:<Rex session id>" for a Rex session (ids, because Rex labels need not be unique), and "tmux:" for
+    /// sessions in neither, which sort last.
+    struct SessionGroup: Hashable {
+        let id: String
+        let title: String
+        let pinRank: Int
+        init(_ s: ClaudeSession?) {
+            if let t = s?.tmux {
+                id = "tmux:\(t.session)"; title = "tmux: \(t.session)"; pinRank = 0
+            } else if let r = s?.rex {
+                id = "rex:\(r.sessionId)"; title = "Rex: \(r.sessionName)"; pinRank = 0
+            } else {
+                id = "tmux:"; title = "Not in tmux or Rex"; pinRank = 1
+            }
+        }
+    }
+
     static func sessionRow(_ s: ClaudeSession, _ prot: [ItemID: Protection], _ now: Date) -> Row {
         let p = prot[s.itemID] ?? .none
         var glyphs: [Glyph] = []
         if p.isLocked { glyphs.append(.locked) }
-        if let t = s.tmux, t.visible || t.current { glyphs.append(.visible) }
+        if s.onScreen { glyphs.append(.visible) }
         if s.busy { glyphs.append(.busy) }
         if s.remoteControl { glyphs.append(.remote) }
         if s.worktree != nil { glyphs.append(.worktree) }
-        var loc = s.tmux?.label ?? "not in tmux"
+        var loc = s.placeLabel ?? ClaudeSession.notPlacedLabel
         if let wt = s.worktree { loc += " ⎇ \(wt)" } else { loc += " › \(s.project)" }
         if !s.cwdExists { loc += " (cwd missing)" }
         var state: String

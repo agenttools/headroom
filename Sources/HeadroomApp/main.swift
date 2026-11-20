@@ -19,6 +19,7 @@
 //   --qa-selection-check=<path>  Finder-style selection check with synthesized clicks and keys, quits
 //   --qa-close-window            closes the window (the app must quit; the watchdog exits 3 if not)
 //   --qa-undo-check=<path>       with --qa-select: ⌫, ⌘Z, ⇧⌘Z through the real menu and undo manager, quits
+//   --qa-rex-check=<path>        Rex rows: Select ▾ submenu, grouping, glyph/Where, rex: filter, Peek, Jump; quits
 
 import AppKit
 import HeadroomActions
@@ -74,6 +75,7 @@ struct QAOptions {
     var orderCheck: String?
     var selectionCheck: String?
     var undoCheck: String?
+    var rexCheck: String?
     var closeWindow = false
 
     var isActive = false
@@ -93,6 +95,7 @@ struct QAOptions {
             if let v = value("--qa-order-check=") { orderCheck = v }
             if let v = value("--qa-selection-check=") { selectionCheck = v }
             if let v = value("--qa-undo-check=") { undoCheck = v }
+            if let v = value("--qa-rex-check=") { rexCheck = v }
             if a == "--qa-close" { close = true }
             if a == "--qa-close-window" { closeWindow = true }
             if a == "--qa-close-now" { closeNow = true }
@@ -121,6 +124,7 @@ struct QAOptions {
                 if let p = qa.orderCheck { c.orderCheckForQA(path: p); return }
                 if let p = qa.selectionCheck { c.selectionCheckForQA(path: p); return }
                 if let p = qa.undoCheck { c.undoCheckForQA(path: p, ids: qa.select); return }
+                if let p = qa.rexCheck { c.rexCheckForQA(path: p); return }
                 if !qa.select.isEmpty { c.debugSelect(qa.select) }
                 if qa.close { c.debugClose(skipSheet: false) }
                 if qa.closeNow { c.debugClose(skipSheet: true) }

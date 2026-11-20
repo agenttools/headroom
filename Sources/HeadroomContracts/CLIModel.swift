@@ -91,6 +91,8 @@ public struct ListItem: Codable, Sendable, Hashable {
     /// Leftovers: when the process group's leader started, and how long it has run (seconds).
     public var startedAt: Date? = nil
     public var runningSeconds: Int? = nil
+    /// Rex location "foundry:2.1" (session:tab.pane); nil when not in Rex. `tmux` stays tmux-only.
+    public var rex: String? = nil
 
     public init(id: String, kind: String, title: String, bytes: Bytes?, url: String? = nil, cwd: String? = nil,
                 idleSeconds: Int? = nil, lastActivity: Date? = nil, status: String, protection: String,
@@ -143,13 +145,15 @@ public struct ListSnapshot: Codable, Sendable {
         if kind.includes(.session) {
             for s in w.claude.sessions {
                 let p = prot(s.itemID)
-                items.append(ListItem(
+                var item = ListItem(
                     id: s.itemID.stringValue, kind: "session", title: s.title, bytes: s.total, cwd: s.cwd,
                     idleSeconds: s.busy ? nil : idle(s.idleSince), lastActivity: s.lastActivity,
                     status: s.busy ? "busy" : "idle", protection: p.level, reasons: p.reasons.map(ReasonJSON.init),
                     pid: s.key.pid, sessionId: s.sessionId, tmux: s.tmux?.label, branch: s.branch,
                     worktree: s.worktree, backgroundBytes: s.backgroundBytes, remoteControl: s.remoteControl,
-                    lastPrompt: s.lastPrompt, resumeCommand: s.hasTranscript ? s.resumeCommand : nil))
+                    lastPrompt: s.lastPrompt, resumeCommand: s.hasTranscript ? s.resumeCommand : nil)
+                item.rex = s.rex?.label
+                items.append(item)
             }
         }
         if kind.includes(.leftover) {

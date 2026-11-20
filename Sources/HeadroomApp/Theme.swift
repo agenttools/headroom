@@ -50,7 +50,7 @@ import HeadroomContracts
     static func glyph(_ g: Glyph) -> (symbol: String, color: NSColor, text: String?, help: String) {
         switch g {
         case .locked: ("lock.fill", .tertiaryLabelColor, nil, "Locked: Headroom never closes this")
-        case .visible: ("eye.fill", .systemTeal, nil, "Visible or current tmux pane")
+        case .visible: ("eye.fill", .systemTeal, nil, "Visible or current tmux pane, or visible Rex pane")
         case .busy: ("circle.fill", .systemGreen, nil, "Busy")
         case .remote: ("antenna.radiowaves.left.and.right", .systemIndigo, nil, "Remote Control is on")
         case .shared(let n): ("link", .secondaryLabelColor, "×\(n)", "Shares a renderer with \(n - 1) other tab\(n == 2 ? "" : "s")")

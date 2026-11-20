@@ -154,7 +154,8 @@ import HeadroomContracts
         chromeGroup.addItem(item("None", #selector(MainWindowController.menuChromeGrouping(_:)), "", [], target: c, tag: 1))
         let claudeGroup = NSMenu(title: "Group Claude By")
         claudeGroup.addItem(item("None", #selector(MainWindowController.menuClaudeGrouping(_:)), "", [], target: c, tag: 0))
-        claudeGroup.addItem(item("tmux Session", #selector(MainWindowController.menuClaudeGrouping(_:)), "", [], target: c, tag: 1))
+        // Tag 1 is ClaudeGrouping.tmux, which groups by tmux session or Rex session (the tag indexes allCases).
+        claudeGroup.addItem(item("tmux or Rex Session", #selector(MainWindowController.menuClaudeGrouping(_:)), "", [], target: c, tag: 1))
         let cg = NSMenuItem(title: "Group Chrome By", action: nil, keyEquivalent: ""); cg.submenu = chromeGroup
         let lg = NSMenuItem(title: "Group Claude By", action: nil, keyEquivalent: ""); lg.submenu = claudeGroup
         sub("View", [

@@ -4,7 +4,8 @@
 // Row protections (protections(_:)):
 //   locked   Chrome itself + sub-rows, "Other Chrome instances", the session that launched Headroom,
 //            rows that fail revalidation (pidMismatch), and every child/background process row.
-//   confirm  sessions: busy / unknown status, active < 10 min, visible or current pane, not in tmux,
+//   confirm  sessions: busy / unknown status, active < 10 min, visible/current tmux pane or visible Rex pane
+//            (a Rex pane whose place is unknown counts as visible), not in tmux or Rex,
 //            has background, no transcript, cwd missing, unregistered;
 //            tabs: audible, pinned;  leftovers: always.
 // Selection-dependent reasons (plan(_:_:)):
@@ -81,8 +82,10 @@ public struct Planner: Sendable {
         if !s.busy, let since = s.idleSince, now.timeIntervalSince(since) < recentActivityWindow {
             r.append(.recentActivity)
         }
-        if let t = s.tmux, t.visible || t.current { r.append(.visiblePane) }
-        if s.tmux == nil { r.append(.notInTmux) }
+        // Never close what the user is looking at: tmux visible or current, Rex visible (Rex has no "current", and
+        // an unplaced Rex pane is visible: unknown means protected).
+        if s.onScreen { r.append(.visiblePane) }
+        if !s.inMultiplexer { r.append(.notInTmux) }
         if !s.background.isEmpty { r.append(.hasBackground(s.background.count, s.backgroundBytes)) }
         if !s.hasTranscript && !s.unregistered { r.append(.noTranscript) }
         if !s.cwdExists { r.append(.cwdMissing) }

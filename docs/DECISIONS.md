@@ -1,12 +1,13 @@
 # Design decisions
 
-These decisions were made on 2026-09-30, after [SPEC.md](SPEC.md) was written. Where they differ from SPEC.md, they override it.
+These decisions were made on 2026-09-30 (item 6 on 2026-11-19), after [SPEC.md](SPEC.md) was written. Where they differ from SPEC.md, they override it.
 
 1. **Chrome:** helper extension + native-messaging host for per-tab memory, with the JXA/AppleScript fallback (SPEC §4 as written).
 2. **Close flow:** undo-first. Close at once and show an Undo toast. Show the confirm sheet only for the risky triggers in SPEC §7.
 3. **Lifecycle:** the app quits when its window closes. Resident mode is v1.1 and out of scope.
 4. **Signing:** the user runs `scripts/make-signing-cert.sh` once, by hand. `build.sh` signs with "Headroom Local Signing" when it exists, and falls back to ad-hoc with a warning.
 5. **CLI is in scope for v1** (moved up from SPEC's v1.1 list). See below.
+6. **Rex support** (decided 2026-11-19): sessions that run in Rex get the same depth as sessions in tmux (location, visibility, Peek, Jump, Undo), and tmux behaviour is unchanged. See below and SPEC §5.1.
 
 ## CLI: `headroom`
 
@@ -36,3 +37,41 @@ Commands:
 - `headroom undo [--last | <record-id>]`: restores from Recently Closed (reopen tab / `claude --resume`).
 - Exit codes: 0 = ok, 1 = error, 2 = needs confirmation or refused.
 - `HEADROOM_DRY_RUN=1` is respected as in the app.
+
+## Rex support
+
+Rex is a terminal multiplexer: a session holds windows (tabs), and a window holds blocks (panes). Built against a Rex 0.1.0-preview.20 server, API revision 16. The details are in SPEC §5.1, §7.6 and §7.7.
+
+- **Type shape: Rex sits beside tmux.**
+  - `ClaudeSession` gains `rex: RexLoc?` next to `tmux: TmuxLoc?`. At most one of the two is set.
+  - A general "location" type was rejected, because it would rename the `tmux` keys in `--dump-json` and `list --json`, which agents read.
+  - Call sites use three helpers that treat both alike: `inMultiplexer`, `onScreen` and `placeLabel`.
+  - Everything else is additive: `ClosedRecord.rexSessionId` and `rexSessionLabel`, `ListItem.rex`, the filter token `rex:`, the preset `rexSession`, `SysKit.parentPid` and `ActionExecutor.jumpNote` (both with default implementations).
+  - The reason codes `visiblePane` and `notInTmux` keep their names and now cover Rex; only their texts changed.
+- **Which multiplexer a session runs in: the nearest one, with no rex call.**
+  - Headroom walks up the claude's ppid chain. A tmux pane or tmux process met first means tmux; a Rex server met first means Rex. So tmux inside a Rex pane stays tmux, and tmux attribution is unchanged.
+  - Rex's root-owned `/usr/bin/login` sits between the server and the pane's shell, and the process scan cannot see it. `SysKit.parentPid` (`PROC_PIDT_SHORTBSDINFO`) reads its parent.
+  - The pane comes from the claude's own `REX_BLOCK` and `REX_SESSION`, which the env filter now keeps. They are trusted only when the walk reached a Rex server first.
+  - `rex ls` and one `rex session inspect` per session add only the layout and visibility. They run only when a claude is in Rex: at most 8 at a time, the sessions that hold a claude (their `REX_SESSION`) first, then the others, 64 in all, with a 3 s deadline for the whole pass.
+- **Visible, and no "current".**
+  - A Rex pane is visible when a client that may be showing its session is attached (any client except `cli` and `agent` ones), its tab is the session's active tab, and it is drawn (not minimized, not hidden by a zoomed pane).
+  - Rex reports no client activity and no "session the app is showing", so there is no "current". Every drawn pane in the active tab of every attached session counts as visible. This only adds confirmations.
+  - Unknown means protected: a claude in Rex whose pane Headroom cannot place (discovery failed or timed out, another Rex server) counts as visible. Closing it asks first, `suggest` skips it, and the check right before SIGTERM treats it the same way. Viewer state Headroom cannot read (an unknown active tab, a client of an unknown kind or without an id) also counts as visible, so a newer Rex that reports these differently fails closed.
+- **Jump and Undo.**
+  - Jump: `rex focus` on the server, then Rex.app is brought forward with `open -b` (no Automation permission), then `rex do session.select` asks the app to show the session. That last step is a Rex client action and needs Remote Control, which is off by default. It goes to a connected local app client, else to rex's default client, and is skipped when only another device's app is connected (it would switch that device). When it fails, Jump returns a note that the app shows as a toast; the note gives rex's reason (for example, Rex.app not connected yet) and names Remote Control only when rex says nothing more specific.
+  - Undo: a new tab in the recorded Rex session (by id, else by label, else a new session) with `--focus=false`, then `send` `claude --resume <sid>` and `send-key enter`. A `window new` or `new` that failed or timed out may still have worked, so Undo compares before and after and adopts the new tab instead of opening a second one. A new session is shown as in Jump; when Rex.app cannot be asked to show it, Undo still reports `done` and its toast (and `headroom undo`) names the new session to open.
+  - Headroom never starts a Rex server: every call passes `--autostart=false`. Undo while Rex is down fails with a clear message, and the record stays restorable.
+- **What Rex cannot do yet.**
+  - No "current" (above).
+  - Several Rex.app windows, or a torn-off tab, can show a tab other than the session's active one. Headroom does not detect this, so such a pane can show as not visible. Checking it needs a mutating Rex action; this is a documented gap.
+  - Jump into another Rex session needs Remote Control in Rex.
+  - No title from Rex pane titles (one call per pane would be needed).
+  - Only the user's own Rex server is read. A claude in a pane of another Rex server is unplaced, and therefore protected.
+  - Only the read-only Rex calls were run against a real server. The mutating calls (`focus`, `do`, `window new`, `new`, `send`, `send-key`) were tested against a fake `rex` only.
+  - No minimum Rex API revision is enforced. Parsing is lenient, and `selftest claude` prints the version and revision.
+- **Test isolation: tests never reach the user's Rex server.**
+  - Default `swift test` uses `RexStub` (a fake `rex` script that logs its calls), hand-written JSON fixtures and the pure process walk. Claude tests get Rex state from a test seam and set `HEADROOM_REX` to `RexStub` or `/nonexistent/rex`.
+  - Every rex call passes `--autostart=false` and an explicit `--timeout`, and removes every `REX_*` variable from the child's environment, because `swift test` itself may run inside a Rex pane. `rex server …` is refused unless `HEADROOM_REX_SERVER` names a private `unix:///` server.
+  - The default binary falls back to the CLI in `/Applications` only when `HOME` is the account's real home, so a test with a fake `HOME` finds no binary.
+  - The round trip against a real Rex binary is opt-in (`HEADROOM_REX_LIVE_TEST=1`). It starts its own private server and makes no mutating call until `whoami` reports that server's pid.
+- **Compatibility.** Records in `closed.jsonl` written before Rex support still decode. An older Headroom ignores the new Rex keys and reopens a Rex session in the tmux session `headroom`; this is accepted. The `ClaudeGrouping` raw values and the "not in either" group id (`tmux:`) are unchanged, so saved list options and expanded rows survive.

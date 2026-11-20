@@ -210,7 +210,8 @@ import HeadroomContracts
     func windowDidBecomeKey(_ notification: Notification) { applyCadence(); refresh() }
     func windowDidResignKey(_ notification: Notification) { applyCadence() }
 
-    /// SPEC §9: tmux and the JXA list follow the window state (3 s / 5 s while key, 10 s / 30 s while visible).
+    /// SPEC §9: tmux, Rex and the JXA list follow the window state (tmux and Rex 3 s / JXA 5 s while key,
+    /// 10 s / 30 s while visible).
     private func applyCadence() {
         (ctx.world as? LiveWorld)?.setCadence(windowKey: window?.isKeyWindow ?? false)
     }
@@ -574,6 +575,11 @@ import HeadroomContracts
         if created > 0 {
             lines.append(ToastLine(text: "\(Fmt.plural(created, "tab")) reopened without history", action: nil))
         }
+        // A new Rex session Rex.app could not be asked to show. Only a session reopened by this Undo (.done) can have
+        // set the notes, so a batch without one never shows an older note.
+        if records.contains(where: { $0.kind == "session" && out[$0] == .done }) {
+            for n in (ctx.world as? LiveWorld)?.reopenNotes ?? [] { lines.append(ToastLine(text: n, action: nil)) }
+        }
         if records.contains(where: { $0.kind == "leftover" }) {
             lines.append(ToastLine(text: "Leftovers cannot be undone (⌘C in Recently Closed copies the command)", action: nil))
         }
@@ -634,7 +640,10 @@ import HeadroomContracts
         }
         guard let id = target else { NSSound.beep(); return }
         let executor = ctx.executor
-        Task { await executor.jump(id) }
+        // A Rex Jump returns a note when it could only bring Rex forward (pane not found, or the app did not switch).
+        Task { [weak self] in
+            if let note = await executor.jumpNote(id) { self?.showToast(ToastModel(headline: note)) }
+        }
         if ctx.isMock { showToast(ToastModel(headline: "Mock: would jump to \(row.title)")) }
     }
 
@@ -874,6 +883,21 @@ import HeadroomContracts
         let tm = NSMenuItem(title: "Sessions in tmux session", action: nil, keyEquivalent: "")
         tm.submenu = sub
         menu.addItem(tm)
+        // Rex sessions are keyed by id (labels need not be unique); shown only when some session runs in Rex.
+        var rexNames: [String: String] = [:]
+        for s in w.claude.sessions { if let r = s.rex, rexNames[r.sessionId] == nil { rexNames[r.sessionId] = r.sessionName } }
+        if !rexNames.isEmpty {
+            let pairs = rexNames.map { (id: $0.key, label: $0.value) }.sorted { ($0.label, $0.id) < ($1.label, $1.id) }
+            let labelCounts = Dictionary(grouping: pairs, by: \.label).mapValues(\.count)
+            let rsub = NSMenu()
+            for p in pairs {
+                let shared = (labelCounts[p.label] ?? 0) > 1
+                rsub.addItem(item(.rexSession(id: p.id, label: p.label), title: shared ? "\(p.label) (…\(p.id.suffix(6)))" : nil))
+            }
+            let rx = NSMenuItem(title: "Sessions in Rex session", action: nil, keyEquivalent: "")
+            rx.submenu = rsub
+            menu.addItem(rx)
+        }
         menu.addItem(.separator())
         menu.addItem(item(.tabsOver(.mb(500))))
         menu.addItem(item(.sessionsOver(.mb(500))))
@@ -928,6 +952,7 @@ import HeadroomContracts
     }
 
     func scopeForQA(_ s: ListScope) { setScope(s) }
+    func claudeGroupingForQA(_ g: ClaudeGrouping) { options.claudeGrouping = g; saveOptions(); rebuild(forceOrder: true) }
 
     /// QA for "no row moves while the pointer is over the list" (§7.1), with HEADROOM_MOCK_JITTER=1 so the
     /// mock footprints change on every refresh. Writes the result to `path`.
@@ -965,6 +990,12 @@ import HeadroomContracts
     func debugSelect(_ ids: [String]) { outlineCtl.select(ids: ids); updateSelectionDependents() }
     func debugClose(skipSheet: Bool) { outlineClose(skipSheet: skipSheet) }
     var debugRowCount: Int { outlineCtl.outline.numberOfRows }
+    /// For `--qa-rex-check`: every string Peek shows (labels, headings, the capture box), and the toast headline.
+    var debugPeekTexts: [String] {
+        func walk(_ v: NSView) -> [String] { ((v as? NSTextField).map { [$0.stringValue] } ?? []) + v.subviews.flatMap(walk) }
+        return peekCtl.map { walk($0.view) } ?? []
+    }
+    var debugToastHeadline: String? { toast.model?.headline }
 }
 
 /// Holds a closure for a context-menu item (menus keep a strong ref via representedObject).

@@ -4,8 +4,9 @@ import Foundation
 import HeadroomContracts
 
 public enum SelectPreset: Sendable, Hashable {
-    /// Idle sessions older than the interval. Excludes busy, visible or current, not in tmux, no transcript,
-    /// cwd missing, background-owning, unregistered and launcher sessions (and anything locked).
+    /// Idle sessions older than the interval. Excludes busy, on screen (visible or current tmux pane, visible or
+    /// unplaced Rex pane), not in tmux or Rex, no transcript, cwd missing, background-owning, unregistered and
+    /// launcher sessions (and anything locked).
     case idleSessions(TimeInterval)
     case tmuxSession(String)
     case tabsOver(Bytes)
@@ -17,6 +18,8 @@ public enum SelectPreset: Sendable, Hashable {
     /// Tabs in windows that are not focused.
     case backgroundWindows
     case allLeftovers
+    /// Sessions in one Rex session, keyed by its full id (labels need not be unique); `label` is the menu title.
+    case rexSession(id: String, label: String)
 
     public static let idleIntervals: [(String, TimeInterval)] = [
         ("30m", 1800), ("1h", 3600), ("2h", 7200), ("6h", 21_600), ("1d", 86_400),
@@ -34,6 +37,7 @@ public enum SelectPreset: Sendable, Hashable {
         case .sameSite: return "Tabs on the same site as the selection"
         case .backgroundWindows: return "Tabs in background windows"
         case .allLeftovers: return "All leftovers"
+        case .rexSession(_, let label): return label
         }
     }
 
@@ -43,7 +47,7 @@ public enum SelectPreset: Sendable, Hashable {
         case .idleSessions(let t):
             return w.claude.sessions.filter { s in
                 guard !s.busy, !s.isLauncher, !s.unregistered, s.hasTranscript, s.cwdExists, s.background.isEmpty,
-                      let tm = s.tmux, !tm.visible, !tm.current, !locked(s.itemID),
+                      s.inMultiplexer, !s.onScreen, !locked(s.itemID),
                       let since = s.idleSince else { return false }
                 return now.timeIntervalSince(since) > t
             }.map(\.itemID)
@@ -71,6 +75,8 @@ public enum SelectPreset: Sendable, Hashable {
             return w.chrome.tabs.filter { bg.contains("\($0.browserPid):\($0.windowId)") }.map(\.itemID)
         case .allLeftovers:
             return w.claude.leftovers.map(\.id)
+        case .rexSession(let id, _):
+            return w.claude.sessions.filter { $0.rex?.sessionId == id && !locked($0.itemID) }.map(\.itemID)
         }
     }
 

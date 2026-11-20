@@ -5,7 +5,8 @@
 //   let world = await ctx.world.snapshot()
 //   let plan = ctx.executor.plan(selection, world)
 //
-// The rest of this module: Planner, CloseCoordinator, Signaller, Journal, Undo.
+// The rest of this module: Planner, CloseCoordinator, Signaller, Journal, Undo. Sessions may run in tmux or Rex;
+// both are wired here (LiveServices.tmux / .rex, LiveWorld's two state caches).
 
 import Foundation
 import HeadroomContracts
@@ -40,6 +41,8 @@ public final class LiveServices: Sendable {
     public let env: HeadroomEnv
     public let sys: LiveSysKit
     public let tmux: TmuxClient
+    /// The one RexClient (also `claude.rex`): discovery, Peek capture, Jump and Undo all go through it.
+    public let rex: RexClient
     public let claude: ClaudeSource
     public let chrome: ChromeSource
     public let world: LiveWorld
@@ -49,7 +52,8 @@ public final class LiveServices: Sendable {
         self.env = env
         sys = LiveSysKit(env: env)
         tmux = TmuxClient(env: env)
-        claude = ClaudeSource(env: env, tmux: tmux)
+        rex = RexClient(env: env)
+        claude = ClaudeSource(env: env, tmux: tmux, rex: rex)
         chrome = ChromeSource(env: env)
         world = LiveWorld(env: env, sys: sys, tmux: tmux, claude: claude, chrome: chrome)
         executor = LiveExecutor(env: env, sys: sys, tmux: tmux, claude: claude, chrome: chrome)
@@ -78,8 +82,32 @@ public final class TmuxStateCache: @unchecked Sendable {
     }
 }
 
+/// Rex discovery (`rex ls` + one `session inspect` per session) reused between refreshes, with the same cadence and
+/// TTL rule as TmuxStateCache: TTL 0 (the default) = always fresh. Every result is cached, failures included, so a Rex
+/// server that does not answer costs one bounded fetch per TTL, not one per tick. Close-time checks never use it.
+/// `sessionsFirst` (the sessions that hold a claude) are inspected first; a cached pass that neither put a wanted
+/// session first nor inspected it is stale, so a new claude in a session the last pass skipped is placed at once.
+public final class RexStateCache: @unchecked Sendable {
+    private let lock = NSLock()
+    private var ttl: TimeInterval = 0
+    private var cached: (at: Date, wanted: Set<String>, state: RexState)?
+    public init() {}
+    public func setTTL(_ t: TimeInterval) { lock.withLock { ttl = t } }
+    func get(_ rex: RexClient, sessionsFirst wanted: Set<String> = []) async -> RexState {
+        let now = Date()
+        if let c = lock.withLock({ cached }), now.timeIntervalSince(c.at) < lock.withLock({ ttl }),
+           wanted.subtracting(c.wanted).subtracting(c.state.appClients.keys).isEmpty {
+            return c.state
+        }
+        let s = await rex.state(sessionsFirst: wanted)
+        lock.withLock { cached = (now, wanted, s) }
+        return s
+    }
+}
+
 /// One refresh: scan → ownership → providers. tmux runs once per refresh (panes + clients, shared by
 /// ownership and the Claude source), and the JXA list and tmux state follow the window's cadence (setCadence).
+/// Rex runs only when some claude's ppid chain reaches a Rex server (a pure check, no rex call), on the same cadence.
 public struct LiveWorld: WorldProvider {
     public let env: HeadroomEnv
     public let sys: LiveSysKit
@@ -87,10 +115,16 @@ public struct LiveWorld: WorldProvider {
     public let claude: ClaudeSource
     public let chrome: ChromeSource
     public let tmuxCache = TmuxStateCache()
+    public let rexCache = RexStateCache()
 
-    /// SPEC §9 cadences for the parts that are expensive to run every tick (tmux, osascript).
+    /// Notes from the last session Undo (ClaudeSource.lastReopenNotes): a new Rex session that Rex.app could not be
+    /// asked to show. The app's Undo toast and `headroom undo` show them.
+    public var reopenNotes: [String] { claude.lastReopenNotes }
+
+    /// SPEC §9 cadences for the parts that are expensive to run every tick (tmux, Rex, osascript).
     public func setCadence(windowKey: Bool) {
         tmuxCache.setTTL(windowKey ? 3 : 10)
+        rexCache.setTTL(windowKey ? 3 : 10)
         chrome.setCadence(windowKey: windowKey)
     }
 
@@ -103,7 +137,14 @@ public struct LiveWorld: WorldProvider {
         let ownership = Ownership.assign(table, sessions: await records, hosts: await hosts,
                                          tmuxPanes: tmuxNow.panes, sys: sys, env: env)
         async let chromeSnap = chrome.snapshot(table, ownership, sys)
-        async let claudeSnap = claude.snapshot(table, ownership, sys, tmuxState: tmuxNow)
+        // Awaited before the `async let` below so the child task captures a value, not a pending fetch.
+        let rexNow: RexState?
+        if let wanted = ClaudeSource.rexSessionsNeeded(table, ownership, sys, tmuxPanes: tmuxNow.panes) {
+            rexNow = await rexCache.get(claude.rex, sessionsFirst: wanted)
+        } else {
+            rexNow = nil
+        }
+        async let claudeSnap = claude.snapshot(table, ownership, sys, tmuxState: tmuxNow, rexState: rexNow)
         let me = getpid()
         var selfBytes = table.byPid[me]?.footprint ?? 0
         for h in await hosts { selfBytes += table.byPid[h.hostPid]?.footprint ?? 0 }

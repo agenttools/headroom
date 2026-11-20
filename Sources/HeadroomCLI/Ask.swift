@@ -59,7 +59,7 @@ struct AskClaude {
 
     Verdicts:
     - "safe": closing loses nothing that matters, and Headroom's Undo can bring it back (tabs reopen; \
-    sessions resume with `claude --resume` in a new tmux window).
+    sessions resume with `claude --resume` in a new tmux window or Rex tab, where they ran).
     - "confirm": probably worth closing, but the user should look first (uncommitted git changes, a last \
     prompt that looks unfinished, a leftover dev server, which cannot be undone).
     - "keep": do not close.

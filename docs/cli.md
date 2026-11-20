@@ -33,7 +33,9 @@ headroom          --version | --help
 | `HEADROOM_DRY_RUN=1` | Every close, signal and restore is a logged no-op (`dryRun`). Prompts and refusals stay the same as in a real run, as in the app. |
 | `HEADROOM_MOCK=1` (or `--mock`) | Uses the built-in MockWorld and a mock executor. Nothing is touched. Mock state is per process, so a `--mock close` is not seen by a later `--mock undo`. |
 | `HEADROOM_SUPPORT_DIR` | Replaces `~/Library/Application Support/Headroom` (`actions.jsonl`, `closed.jsonl`, `run/`). |
-| `HEADROOM_CLAUDE_DIR`, `HEADROOM_TMUX_SOCKET`, `HEADROOM_CLAUDE_VERSIONS_GLOB` | Test seams shared with the app (see `Env.swift`). |
+| `HEADROOM_CLAUDE_DIR`, `HEADROOM_TMUX`, `HEADROOM_TMUX_SOCKET`, `HEADROOM_CLAUDE_VERSIONS_GLOB` | Test seams shared with the app (see `Env.swift`). |
+| `HEADROOM_REX` | Path of the `rex` CLI. The default is `~/.local/bin/rex`; when `HOME` is your account's home, also the CLI inside `/Applications/Rex.app` or `/Applications/Rex Beta.app`. Tests use a fake script here. |
+| `HEADROOM_REX_SERVER` | A private Rex server, as `unix:///<absolute path>` (tests). Every rex call gets `-S <address>`; any other form makes every rex call refuse. Without it, rex uses your own server. Headroom never starts a Rex server either way (`--autostart=false`). |
 | `HEADROOM_ASK_CLAUDE` | Path of the `claude` binary for `suggest --ask`. The default is `claude` on `PATH`, then `~/.local/bin`, `~/.claude/local`, `/opt/homebrew/bin` and `/usr/local/bin`. Tests use a fake script here. |
 | `CLAUDE_PID` | Set by Claude Code. The session that ran `headroom` is locked (`launcher`), as are Headroom's own ancestors. |
 
@@ -57,12 +59,12 @@ after a restart the old id is "not found" and `close` refuses it.
 
 This command prints system memory (pressure, swap), then the Chrome tabs, Claude sessions and leftovers, largest first.
 
-The human table has these columns: id, memory, idle time, status, protection, title and where (host, `tmux session:window.pane` and cwd, or the leftover's cwd). The protection reason codes are in parentheses. `—` means unknown. For example, per-tab memory is unknown when Chrome is read through AppleScript instead of the helper extension.
+The human table has these columns: id, memory, idle time, status, protection, title and where. Where is the host for a tab and the cwd for a leftover. For a session it is `session:window.pane` in tmux (`hub:5.0`), `rex session:tab.pane` in Rex (`rex foundry:2.1`) or `not in tmux or Rex`, then the cwd. The protection reason codes are in parentheses. `—` means unknown. For example, per-tab memory is unknown when Chrome is read through AppleScript instead of the helper extension.
 
 ### `list --json`
 
 Keys that do not apply to a kind are omitted. A `null` value is omitted too. Incognito tab URLs are never printed.
-Below is the real `--mock` output, cut to 4 items:
+Below is the real `--mock` output, cut to 5 items:
 
 ```json
 {
@@ -118,6 +120,16 @@ Below is the real `--mock` output, cut to 4 items:
       "idleSeconds": 11400, "lastActivity": "2026-09-30T14:45:21Z",
       "pinned": false, "audible": false, "incognito": false, "sharedWith": 0,
       "protection": "none", "reasons": []
+    },
+    {
+      "id": "session:43037:1790691540", "kind": "session", "title": "rex docs pass",
+      "bytes": 304087040, "backgroundBytes": 0, "cwd": "/Users/jappleseed/work/foundry", "rex": "foundry:2.1",
+      "branch": "docs", "pid": 43037, "sessionId": "c5d50015-0000-4000-8000-000000001015",
+      "status": "idle", "idleSeconds": 5400, "lastActivity": "2026-09-30T16:25:21Z",
+      "lastPrompt": "continue with rex docs pass", "remoteControl": false,
+      "protection": "confirm",
+      "reasons": [{ "code": "visiblePane", "text": "visible or current tmux pane, or visible Rex pane" }],
+      "resumeCommand": "cd '/Users/jappleseed/work/foundry' && claude --resume c5d50015-0000-4000-8000-000000001015"
     }
   ]
 }
@@ -128,6 +140,7 @@ Below is the real `--mock` output, cut to 4 items:
 | `bytes` | Footprint (Activity Monitor "Memory"). Tabs: fair share of their renderers (`null` = unknown). Sessions: claude + children + background. |
 | `idleSeconds` | Tabs: since `lastAccessed` (0 for the active tab). Sessions: since `max(statusUpdatedAt, last transcript activity)`; omitted while busy. |
 | `startedAt`, `runningSeconds` | Leftovers only: when the group's leader started and how long it has run. |
+| `tmux`, `rex` | Sessions: where the session runs. `tmux` is a tmux location, `session:window.pane` (`hub:3.1`). `rex` is a Rex location, `session:tab.pane` with both numbers 1-based (`foundry:2.1`), or `session:?` when Headroom cannot place the pane (it then counts as visible). A session has at most one of the two; with neither, it runs in neither multiplexer (reason `notInTmux`). `tmux` never holds a Rex location. |
 | `status` | tab: `active` \| `audible` \| `sleeping` \| `background`; session: `busy` \| `idle`; leftover: `orphaned` |
 | `protection` | `none` (closes at once), `confirm` (the app shows its sheet; the CLI needs `--force-confirm`), `locked` (never closed) |
 | `totals.chromeSource` | `helper` \| `appleScript` \| `processesOnly` \| `waiting` \| `notRunning` |
@@ -139,6 +152,10 @@ Reason codes: `busy`, `recentActivity`, `visiblePane`, `notInTmux`, `hasBackgrou
 `cwdMissing`, `unregistered`, `audible`, `pinned`, `emptiesWindow`, `closesAllWindows`, `leftover`,
 `manyItems`, `launcher`, `pidMismatch`, `chromeCore`, `childProcess` (a child or background process of a live session: close the session instead). `close --json` also uses `notFound`.
 
+Two codes also cover Rex, and kept their names when Rex support was added (only their texts changed):
+`visiblePane` ("visible or current tmux pane, or visible Rex pane") includes a Rex pane that Headroom cannot place,
+and `notInTmux` ("not in tmux or Rex (Undo cannot put it back where it ran)") means the session runs in neither.
+
 ## `suggest`
 
 The default mode uses rules only. It is instant, free and local. The tunable numbers are in
@@ -146,7 +163,7 @@ The default mode uses rules only. It is instant, free and local. The tunable num
 
 | Candidate | Rule | Verdict |
 |---|---|---|
-| Claude session | Idle more than 2 h, not busy (unknown status counts as busy), not the visible or current tmux pane, no background processes | `safe`. If the app would still ask (not in tmux, no transcript, cwd missing, unregistered), `confirm` with that reason. |
+| Claude session | Idle more than 2 h, not busy (unknown status counts as busy), not the visible or current tmux pane or a visible Rex pane (a Rex pane Headroom cannot place counts as visible), no background processes | `safe`. If the app would still ask (not in tmux or Rex, no transcript, cwd missing, unregistered), `confirm` with that reason. |
 | Leftover | Every leftover | `confirm`. Safe to stop, but it cannot be undone, so it always asks. |
 | Chrome tab | Not active, audible, pinned, incognito or already asleep, and either heavy (at least 300 MB) or unused for more than 1 h | `safe` |
 | Locked row (launcher, Chrome itself, a process row, a changed pid) | Never suggested | – |
@@ -197,6 +214,8 @@ could not evaluate. Today that is `tab` when the tab list has no per-tab memory 
 AppleScript list (which the CLI always gets while the app is running, because the app holds the helper
 connection) or no tab list at all. An empty `suggestions` list then says nothing about tabs.
 `confirmCommand` never includes `--include-busy`: a session that became busy after `suggest` ran is refused.
+A session's `reason` says `not on screen` when it runs in tmux or Rex, and `not in tmux or Rex` otherwise. A `safe`
+session's reason ends with `Undo resumes it in tmux` or, for a session in Rex, `Undo resumes it in Rex`.
 
 ### `suggest --ask`
 
@@ -240,11 +259,11 @@ start time, the signal allowlist, SIGTERM only, and no SIGKILL. The CLI is **all
 1. If any id is locked (Chrome itself, a `proc:` row, the launcher, a changed pid) or not found, nothing is
    closed and the exit code is 2. Remove those ids and run the command again.
 2. If any item would make the app show its confirm sheet (§7.3: busy, active in the last 10 min, visible
-   pane, not in tmux, background processes, no transcript, cwd missing, unregistered, audible, pinned, emptying a
-   window of more than 5 tabs, closing every window, more than 15 items, any leftover), nothing is closed and the exit
-   code is 2. The command prints each reason. `--force-confirm` accepts all of them, like the sheet's
-   "Skip Busy", **except busy**: if a session is busy (mid-turn), nothing is closed and the exit code is 2,
-   unless you also give `--include-busy` (the sheet's "Close All"). `suggest` never prints `--include-busy`.
+   tmux or Rex pane, not in tmux or Rex, background processes, no transcript, cwd missing, unregistered, audible,
+   pinned, emptying a window of more than 5 tabs, closing every window, more than 15 items, any leftover), nothing
+   is closed and the exit code is 2. The command prints each reason. `--force-confirm` accepts all of them, like
+   the sheet's "Skip Busy", **except busy**: if a session is busy (mid-turn), nothing is closed and the exit code
+   is 2, unless you also give `--include-busy` (the sheet's "Close All"). `suggest` never prints `--include-busy`.
 3. The command prints the plan, with the same text as the sheet. Then:
    - `--yes`: it closes.
    - Without `--yes`, on a TTY: it asks `[y/N]`. Any answer except `y` or `yes` cancels (exit 2). After a `y`,
@@ -255,7 +274,7 @@ start time, the signal allowlist, SIGTERM only, and no SIGKILL. The CLI is **all
      `HEADROOM_DRY_RUN=1` does the same, but it keeps the question, so the interaction is the same as a real run.
 4. Sessions are closed with SIGTERM, and survivors are reported as "still running" (the app has Force Quit).
    Right before the SIGTERM, each session is checked again: one that became busy, visible or recently active
-   since the plan is skipped (`changedSkipped`).
+   since the plan is skipped (`changedSkipped`). A Rex pane that Headroom can no longer place counts as visible.
    The background processes of closed sessions are stopped too, unless you give `--keep-background`. A background
    process that could not be stopped is reported as an extra `results[]` entry (`proc:` id, `failed: …`).
 
@@ -300,13 +319,27 @@ headroom undo --list [--json] # Recently Closed (last 7 days), newest first
 ```
 
 A tab is reopened with `sessions.restore` (history is kept), or by its URL. A session is resumed with `claude --resume <sid>`
-in a new tmux window (an unsent draft is lost). Leftovers cannot be undone: `undo` of a leftover alone exits 1 and
-prints the argv to restart it by hand. In a batch that mixes restorable items and leftovers, the leftovers are
-reported with outcome `notUndoable` (and their `argv`), and the status and exit code count only the restorable items.
+in a new tmux window, or in a new Rex tab if it ran in Rex (an unsent draft is lost). A session that ran in neither
+reopens in the tmux session `headroom`, or in the Rex session `headroom` when tmux is not installed and rex is.
+Headroom never starts Rex: if Rex is not running, the outcome is
+`failed: Rex is not running (open Rex, then Undo again)` and the record stays restorable. Other Rex outcomes:
+`failed: rex is not installed (<path>)`, `failed: Rex could not open a tab in “<session>”`,
+`failed: Rex could not create session “<session>”` and `failed: Rex opened a tab but could not type the resume command`.
+When the Rex session was gone, Undo creates it and asks Rex.app to show it. If Rex.app cannot be asked (Remote
+Control off, Rex.app not connected, or only another device's Rex connected), the outcome is still `done`, and
+`undo` prints a note after the results: `Resumed in the new Rex session “<label>”; open it in Rex.` followed by the
+reason (for example `Turn on Remote Control in Rex so Undo can switch sessions.`).
+Leftovers cannot be undone: `undo` of a leftover alone exits 1 and prints the argv to restart it by hand. In a batch
+that mixes restorable items and leftovers, the leftovers are reported with outcome `notUndoable` (and their `argv`),
+and the status and exit code count only the restorable items.
 A record that was already restored (by the app, Recently Closed or an earlier `undo`) is `failed: already restored`.
 In dry run, session records still get the real refusals (still running, cwd missing). `undo --json` prints
-`{schema, command: "undo", status: "restored"|"partial"|"nothing", dryRun, message?, results: [{recordId, itemId, kind, title, outcome, argv?}]}`.
-`undo --list --json` prints `{schema, records: [ClosedRecord]}`.
+`{schema, command: "undo", status: "restored"|"partial"|"nothing", dryRun, message?, results: [{recordId, itemId, kind, title, outcome, argv?}], notes?}`.
+`notes` (additive, omitted when empty) holds the notes above, one string each.
+`undo --list --json` prints `{schema, records: [ClosedRecord]}`. A session record has `tmuxSession` when the session
+ran in tmux, or `rexSessionId` (the full Rex session id, `session:<uuid>`) and `rexSessionLabel` when it ran in Rex.
+`rexSessionLabel` is omitted when the label was unknown. Records written before Rex support have no Rex keys.
+`close --json` `records` have the same keys.
 
 ## Recipes for agents
 
@@ -322,6 +355,11 @@ headroom undo --last --json
 
 `headroom selftest [sys|ownership|claude|chrome]` (no group = all four; the app has the same `Headroom --selftest …`)
 runs the read-only checks in `CoreSelfTest`, `ClaudeSelfTest` and `ChromeSelfTest`. The `sys`
-group spawns and stops its own short-lived children only. `chrome` binds a scratch socket for its round trip, reads
-Chrome with AppleScript only if Automation is already granted, and never prompts. The exit code is 0 when every
-check passes.
+group spawns and stops its own short-lived children only. `claude` runs `tmux list-panes` and `list-clients`, and,
+when a Rex server runs, the read-only `rex ls`, `session inspect` and `whoami` (it never starts a Rex server). Its
+`rex` check prints the server's version, API revision, and whether discovery was reachable and complete. It fails
+when a session is in both tmux and Rex, and, when a claude runs in Rex, also when Rex discovery is incomplete or a
+claude in Rex cannot be placed in its pane. With no claude in Rex, discovery is printed for information only.
+`chrome` binds a scratch socket for its
+round trip, reads Chrome with AppleScript only if Automation is already granted, and never prompts. The exit code is
+0 when every check passes.

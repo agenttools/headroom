@@ -5,7 +5,8 @@
 //     print(report.render()); exit(report.passed ? 0 : 1)
 //
 // Safety: `sys` spawns its own short-lived children (perl/sleep) and SIGTERMs only those. `ownership` is read-only:
-// it scans processes, runs `tmux list-panes` (read-only) and reads the sessions JSON. It never signals anything.
+// it scans processes, runs `tmux list-panes` (read-only) and reads the sessions JSON; Rex servers and panes are
+// recognised from the process table (no rex call). It never signals anything.
 
 import Darwin
 import Foundation
@@ -210,7 +211,7 @@ public enum CoreSelfTest {
 
         let problems = Ownership.verify(map, table: t, tmuxPanes: panes, env: env, sys: sk)
         r.add("ownership", "invariants", problems.isEmpty,
-              problems.isEmpty ? "no pid in two buckets; no live claude, pane pid or main browser inside a unit"
+              problems.isEmpty ? "no pid in two buckets; no live claude, tmux pane pid, Rex server or pane process, or main browser inside a unit"
                                : problems.prefix(5).joined(separator: "; "))
 
         let liveOK = map.liveSessions.allSatisfy { map.owner[$0.pid] == .session($0) }

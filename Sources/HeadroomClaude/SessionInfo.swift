@@ -85,11 +85,13 @@ public final class WhereCache: @unchecked Sendable {
     }
 }
 
-/// "hub:3.1 › compass ⎇ my-branch" (SPEC §5 "Where"). The UI may render it differently; this is the CLI/peek form.
+/// "hub:3.1 › compass ⎇ my-branch", or "rex foundry:2.1 › compass ⎇ my-branch" in Rex (SPEC §5 "Where"). The UI may
+/// render it differently; this is the CLI/peek form.
 public enum WhereLabel {
-    public static func make(tmux: TmuxLoc?, project: String, branch: String?, worktree: String?) -> String {
+    public static func make(tmux: TmuxLoc?, rex: RexLoc? = nil, project: String, branch: String?,
+                            worktree: String?) -> String {
         var parts: [String] = []
-        if let t = tmux { parts.append(t.label) }
+        if let t = tmux { parts.append(t.label) } else if let r = rex { parts.append("rex " + r.label) }
         var repo = project
         if let w = worktree, w != project { repo += " ⎇ " + w }
         else if let b = branch { repo += " ⎇ " + b }

@@ -165,6 +165,67 @@ import HeadroomContracts
         q.run { self.finish(path, $0) }
     }
 
+    /// Rex in the window, against MockWorld's Rex rows (Rex session "foundry": 2 sessions, one visible at foundry:2.1
+    /// in tab "api reference"; "studio": 1). Calls the same entry points as the menus and the filter field
+    /// (no synthesized events): Select ▾ submenu, Group Claude By, the eye glyph and Where text, `rex:` filter,
+    /// Peek's Rex pane (MockExecutor's canned capture) and Jump (the mock toast; jumpNote is nil in mock).
+    func rexCheckForQA(path: String) {
+        let q = QARunner(delay: 0.6)
+        q.flushPath = path
+        func check(_ ok: Bool, _ name: String, _ detail: String) { q.note("\(ok ? "PASS" : "FAIL") \(name) (\(detail))") }
+        func sessionRows() -> Set<String> { Set(outlineCtl.byID.values.filter { $0.row.kind == .session }.map(\.id)) }
+        var rex: [ClaudeSession] = []
+        var visible: ClaudeSession?
+        func ids(_ label: String) -> Set<String> { Set(rex.filter { $0.rex?.sessionLabel == label }.map(\.itemID.stringValue)) }
+        func sessionId(_ label: String) -> String { rex.first { $0.rex?.sessionLabel == label }?.rex?.sessionId ?? "?" }
+        q.step {
+            rex = self.world.claude.sessions.filter { $0.rex != nil }
+            visible = rex.first { $0.rex?.visible == true }
+            check(rex.count == 3 && ids("foundry").count == 2 && ids("studio").count == 1 && rex.allSatisfy { $0.tmux == nil },
+                  "mock world has 3 Rex sessions, none also in tmux", "foundry \(ids("foundry").count), studio \(ids("studio").count)")
+            let menu = NSMenu()
+            self.populatePresets(menu)
+            let titles = menu.items.first { $0.title == "Sessions in Rex session" }?.submenu?.items.map(\.title) ?? []
+            check(titles.count == 2 && titles[0].hasPrefix("foundry  (2 ·") && titles[1].hasPrefix("studio  (1 ·"),
+                  "Select ▾ has Sessions in Rex session", titles.joined(separator: " | "))
+            let row = visible.flatMap { self.outlineCtl.byID[$0.itemID.stringValue]?.row }
+            check(row?.location.hasPrefix("rex foundry:2.1 › ") == true && row?.glyphs.contains(.visible) == true
+                  && row?.protection.reasons == [.visiblePane],
+                  "visible Rex row: Where, eye glyph, asks first for visiblePane only",
+                  "\(row?.location ?? "no row"); \(row?.protection.reasons.map(\.code) ?? [])")
+            self.claudeGroupingForQA(.tmux)
+            let f = self.outlineCtl.byID["rex:" + sessionId("foundry")]?.row
+            let s = self.outlineCtl.byID["rex:" + sessionId("studio")]?.row
+            let none = self.outlineCtl.byID["tmux:"]?.row
+            check(f?.title == "Rex: foundry" && f?.children.count == 2 && s?.title == "Rex: studio" && s?.children.count == 1
+                  && none?.title == "Not in tmux or Rex",
+                  "Group Claude By tmux or Rex Session", "\(f?.title ?? "-"), \(s?.title ?? "-"), \(none?.title ?? "-")")
+            self.claudeGroupingForQA(.none)
+            self.filterForQA("rex:found")
+            let found = sessionRows()
+            self.filterForQA("rex:studio")
+            let studio = sessionRows()
+            self.filterForQA("")
+            check(found == ids("foundry") && studio == ids("studio"), "rex: filter", "rex:found \(found.count), rex:studio \(studio.count)")
+            if let v = visible { self.debugSelect([v.itemID.stringValue]); self.outlinePeek() }
+        }
+        q.step {
+            let texts = self.debugPeekTexts
+            let r = visible?.rex
+            let heading = "Rex pane \(r?.shortBlockId ?? "?") (read-only)".uppercased()
+            let ok = r != nil && texts.contains(heading)
+                && texts.contains { $0.contains("Rex foundry:2.1 · api reference (visible)") }
+                && texts.contains { $0.contains("(mock Rex pane \(r?.blockId.suffix(6) ?? "?"))") }
+            check(ok, "Peek shows the Rex place and the pane capture", ok ? heading : texts.joined(separator: " ¦ "))
+            self.jump(self.outlineCtl.selectedRows.first)
+        }
+        q.step {
+            let want = "Mock: would jump to \(visible?.title ?? "?")"
+            check(self.debugToastHeadline == want, "Jump on a Rex session", self.debugToastHeadline ?? "no toast")
+        }
+        q.run { self.finish(path, $0) }
+    }
+
     /// Undo-first close (DECISIONS Q2) and NSUndoManager: close → Undo → Redo, through the window's undo manager.
     func undoCheckForQA(path: String, ids: [String]) {
         window?.makeFirstResponder(ov)

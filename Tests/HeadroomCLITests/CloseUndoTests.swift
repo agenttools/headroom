@@ -186,6 +186,53 @@ private func present(_ h: Harness, _ id: String) async -> Bool {
         #expect(await h.run(["undo", "--last", a]).code == 1)
     }
 
+    /// A visible Rex pane asks first, exactly like a visible tmux pane.
+    @Test func visibleRexSessionIsRefusedWithoutForceConfirm() async throws {
+        let h = Harness()
+        let docs = "session:43037:1790691540"                       // rex docs pass (visible)
+        #expect(sid("rex docs pass") == docs)
+        let (code, io) = await h.run(["close", "--yes", docs])
+        #expect(code == 2)
+        #expect(io.stderr.contains("visible or current tmux pane, or visible Rex pane"))
+        #expect(io.stderr.contains("--force-confirm"))
+        #expect(await present(h, docs))
+        let (jcode, r) = try await h.json(CloseResultJSON.self, ["close", "--json", "--yes", docs])
+        #expect(jcode == 2 && r.status == "needsConfirmation")
+        #expect(r.plan.items.first?.reasons.map(\.code) == ["visiblePane"])
+    }
+
+    /// The Rex session id and label go into Recently Closed, so Undo reopens it in that Rex session.
+    @Test func closedRexSessionRecordsItsRexSession() async throws {
+        let h = Harness()
+        let spike = "session:43134:1790694480"                      // rex billing spike (hidden tab, no protection)
+        #expect(sid("rex billing spike") == spike)
+        let (code, r) = try await h.json(CloseResultJSON.self, ["close", "--json", "--yes", spike])
+        #expect(code == 0 && r.status == "closed")
+        #expect(r.records.isEmpty)                                  // dry run: records are not written
+        let (_, list) = try await h.json(RecentJSON.self, ["undo", "--list", "--json"])
+        let rec = try #require(list.records.first { $0.itemId == spike })
+        #expect(rec.kind == "session")
+        #expect(rec.rexSessionId == "session:0190aaaa-0000-7000-8000-000000000002")
+        #expect(rec.rexSessionLabel == "studio")
+        #expect(rec.tmuxSession == nil)
+        // The raw JSON carries the new keys; a tmux record keeps tmuxSession and has no rex keys.
+        _ = await h.run(["close", "--yes", sid("plant watch")])
+        let (_, io) = await h.run(["undo", "--list", "--json"])
+        let root = try #require(try JSONSerialization.jsonObject(with: Data(io.stdout.utf8)) as? [String: Any])
+        let raw = try #require(root["records"] as? [[String: Any]])
+        let rawSpike = try #require(raw.first { $0["itemId"] as? String == spike })
+        #expect(rawSpike["rexSessionId"] as? String == "session:0190aaaa-0000-7000-8000-000000000002")
+        #expect(rawSpike["rexSessionLabel"] as? String == "studio")
+        let rawPlant = try #require(raw.first { $0["itemId"] as? String == sid("plant watch") })
+        #expect(rawPlant["tmuxSession"] as? String == "misc")
+        #expect(rawPlant["rexSessionId"] == nil && rawPlant["rexSessionLabel"] == nil)
+        // Undo (dry run) restores it.
+        let (ucode, uio) = await h.run(["undo", spike])
+        #expect(ucode == 0)
+        #expect(uio.stdout.contains("1 of 1 item"))
+        #expect(await present(h, spike))
+    }
+
     @Test func emptyRecentlyClosed() async {
         let (code, io) = await Harness().run(["undo"])
         #expect(code == 1)

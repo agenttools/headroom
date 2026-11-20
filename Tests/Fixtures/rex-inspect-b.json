@@ -1,0 +1,71 @@
+{
+  "revision": 2000000040,
+  "session_id": "session:0190bbbb-0000-7000-8000-00000000000b",
+  "label": "beta",
+  "active_window_id": "window:0190bbbb-0000-7000-8000-0000000000b1",
+  "windows": [
+    {
+      "window_id": "window:0190bbbb-0000-7000-8000-0000000000b1",
+      "label": "zoomed tab",
+      "focused_block_id": "block:0190bbbb-0000-7000-8000-0000000000b1",
+      "zoomed_block_id": "block:0190bbbb-0000-7000-8000-0000000000b2",
+      "layers": [
+        {
+          "layer_id": "layer:0190bbbb-0000-7000-8000-0000000000b1",
+          "kind": "tiled",
+          "bounds": [0, 0, 1, 1],
+          "layout": {
+            "rect": [0, 0, 1, 1],
+            "split": {
+              "split_id": "split:0190bbbb-0000-7000-8000-0000000000b1",
+              "direction": "vertical",
+              "ratio": 0.5,
+              "before": {"rect": [0, 0, 1, 0.5], "block_id": "block:0190bbbb-0000-7000-8000-0000000000b1"},
+              "after": {"rect": [0, 0.5, 1, 0.5], "block_id": "block:0190bbbb-0000-7000-8000-0000000000b2"}
+            }
+          },
+          "blocks": [
+            {"block_id": "block:0190bbbb-0000-7000-8000-0000000000b1", "label": "shell",
+             "creator_name": "com.superlogical.terminal", "flavor": "com.superlogical.terminal.shell",
+             "host_id": "00000000-0000-4000-8000-0000000000aa"},
+            {"block_id": "block:0190bbbb-0000-7000-8000-0000000000b2", "label": "editor",
+             "creator_name": "com.superlogical.terminal", "flavor": "com.superlogical.terminal.shell",
+             "host_id": "00000000-0000-4000-8000-0000000000aa"}
+          ]
+        },
+        {
+          "layer_id": "layer:0190bbbb-0000-7000-8000-0000000000b2",
+          "kind": "floating",
+          "bounds": [0.6, 0.6, 0.3, 0.3],
+          "layout": {"rect": [0, 0, 1, 1], "block_id": "block:0190bbbb-0000-7000-8000-0000000000b3"},
+          "blocks": [
+            {"block_id": "block:0190bbbb-0000-7000-8000-0000000000b3", "label": "scratch",
+             "creator_name": "com.superlogical.terminal", "flavor": "com.superlogical.terminal.shell",
+             "host_id": "00000000-0000-4000-8000-0000000000aa"}
+          ]
+        },
+        {
+          "layer_id": "layer:0190bbbb-0000-7000-8000-0000000000b3",
+          "kind": "floating",
+          "state": "minimized",
+          "bounds": [0.1, 0.1, 0.3, 0.3],
+          "layout": {"rect": [0, 0, 1, 1], "block_id": "block:0190bbbb-0000-7000-8000-0000000000b4"},
+          "blocks": [
+            {"block_id": "block:0190bbbb-0000-7000-8000-0000000000b4", "label": "parked",
+             "creator_name": "com.superlogical.terminal", "flavor": "com.superlogical.terminal.shell",
+             "host_id": "00000000-0000-4000-8000-0000000000aa"}
+          ]
+        }
+      ]
+    }
+  ],
+  "clients": [
+    {
+      "client_id": "client:0190bbbb-0000-7000-8000-0000000000c3",
+      "principal": {"kind": "peer", "uid": 501, "gid": 20, "pid": 4300},
+      "info": {"kind": "app", "platform": "macos", "name": "Rex", "version": "0.1.0 (2042)", "label": "test-mac"},
+      "connected_at": "2026-11-19T09:00:00Z",
+      "connection_state": "lost"
+    }
+  ]
+}

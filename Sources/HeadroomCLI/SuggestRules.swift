@@ -4,9 +4,10 @@
 // app and `headroom close` use) has the last word on protection, so a "safe" suggestion is always something
 // `headroom close` accepts without --force-confirm.
 //
-//   sessions   idle > 2 h, not busy (or status unknown), not the visible/current pane, no background
-//              processes → "safe". If the Planner still wants confirmation (not in tmux, no transcript,
-//              cwd missing, unregistered) → "confirm" with that reason.
+//   sessions   idle > 2 h, not busy (or status unknown), not the visible/current tmux pane or a visible Rex
+//              pane (a Rex pane Headroom cannot place counts as visible), no background processes → "safe".
+//              If the Planner still wants confirmation (not in tmux or Rex, no transcript, cwd missing,
+//              unregistered) → "confirm" with that reason.
 //   leftovers  always "confirm" (safe to stop, but they cannot be undone, so they always ask).
 //   tabs       not active, not audible, not pinned, not incognito, not already asleep, and either heavy
 //              (≥ 300 MB) or unused for more than 1 h → "safe".
@@ -64,11 +65,11 @@ struct SuggestRules {
             guard let since = s.idleSince else { return nil }
             let idle = now.timeIntervalSince(since)
             guard idle > sessionIdle else { return nil }
-            if let t = s.tmux, t.visible || t.current { return nil }
+            if s.onScreen { return nil }                 // tmux visible/current, or Rex visible (or unplaced)
             guard s.background.isEmpty else { return nil }
 
             var why = ["idle \(Self.age(idle))", "not busy"]
-            why.append(s.tmux != nil ? "not on screen" : "not in tmux")
+            why.append(s.inMultiplexer ? "not on screen" : "not in tmux or Rex")
             why.append("no background processes")
             if s.remoteControl { why.append("Remote Control is on") }
             let confirm = p.reasons
@@ -79,7 +80,7 @@ struct SuggestRules {
                                   bytes: s.total, title: s.title)
             }
             return Suggestion(id: s.itemID, verdict: .safe,
-                              reason: why.joined(separator: ", ") + "; Undo resumes it in tmux",
+                              reason: why.joined(separator: ", ") + "; Undo resumes it in " + (s.rex != nil ? "Rex" : "tmux"),
                               bytes: s.total, title: s.title)
         }
     }

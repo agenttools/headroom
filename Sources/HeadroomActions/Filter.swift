@@ -1,6 +1,7 @@
 // Filter (SPEC §7.5) — the token filter behind ⌘F. Pure and UI-independent (the CLI may reuse it).
 //
-//   plain words        match title, URL, name, cwd, branch and tmux session (case-insensitive substring)
+//   plain words        match title, URL, name, cwd, branch, tmux session and Rex session / tab label
+//                      (case-insensitive substring)
 //   "quoted words"     one phrase
 //   >500mb  <100mb     memory above / below (kb, mb, gb; a bare number means MB)
 //   idle>2h  idle<10m  idle longer / shorter than (s, m, h, d)
@@ -8,6 +9,7 @@
 //   is:tab|session|leftover
 //   site:<host>        tabs on that host (suffix match, so site:google.com matches mail.google.com)
 //   tmux:<session>     sessions in that tmux session
+//   rex:<session>      sessions in that Rex session (label, prefix match)
 //   bg                 sessions with background processes
 //   shared             tabs sharing a renderer
 //   sleeping           discarded tabs
@@ -21,7 +23,7 @@ import HeadroomContracts
 /// The facts a filter token can test, built from one tab, session or leftover.
 public struct FilterSubject: Sendable, Hashable {
     public var kind: ItemKind
-    /// Lower-cased title, URL/host, cwd, branch, tmux session, command…
+    /// Lower-cased title, URL/host, cwd, branch, tmux session, Rex session and tab label, command…
     public var haystack: [String]
     public var bytes: Bytes?
     /// Seconds since last activity; nil = unknown or busy.
@@ -32,13 +34,16 @@ public struct FilterSubject: Sendable, Hashable {
     public var hasBackground: Bool
     public var shared: Bool
     public var sleeping: Bool
+    /// Lower-cased Rex session label ("" when Rex's session list could not be read); nil = not in Rex.
+    public var rexSession: String?
 
     public init(kind: ItemKind, haystack: [String], bytes: Bytes? = nil, idle: TimeInterval? = nil, busy: Bool = false,
                 host: String? = nil, tmuxSession: String? = nil, hasBackground: Bool = false, shared: Bool = false,
-                sleeping: Bool = false) {
+                sleeping: Bool = false, rexSession: String? = nil) {
         self.kind = kind; self.haystack = haystack.map { $0.lowercased() }; self.bytes = bytes; self.idle = idle
         self.busy = busy; self.host = host?.lowercased(); self.tmuxSession = tmuxSession?.lowercased()
         self.hasBackground = hasBackground; self.shared = shared; self.sleeping = sleeping
+        self.rexSession = rexSession?.lowercased()
     }
 
     public init(tab t: ChromeTab, now: Date) {
@@ -52,9 +57,13 @@ public struct FilterSubject: Sendable, Hashable {
         if let b = s.branch { hay.append(b) }
         if let w = s.worktree { hay.append(w) }
         if let t = s.tmux { hay.append(t.session); hay.append(t.label); hay.append(t.windowName) }
+        if let r = s.rex {
+            hay.append(r.sessionName); hay.append(r.label)
+            if let w = r.windowLabel { hay.append(w) }
+        }
         self.init(kind: .session, haystack: hay, bytes: s.total,
                   idle: s.busy ? nil : s.idleSince.map { now.timeIntervalSince($0) }, busy: s.busy,
-                  tmuxSession: s.tmux?.session, hasBackground: !s.background.isEmpty)
+                  tmuxSession: s.tmux?.session, hasBackground: !s.background.isEmpty, rexSession: s.rex?.sessionLabel)
     }
 
     public init(leftover l: LeftoverGroup, now: Date) {
@@ -80,6 +89,7 @@ public struct FilterQuery: Sendable, Hashable {
         case shared
         case sleeping
         case not(Token)
+        case rex(String)
     }
 
     public let tokens: [Token]
@@ -143,6 +153,7 @@ public struct FilterQuery: Sendable, Hashable {
         }
         if let v = value(t, "site:") { return .site(v) }
         if let v = value(t, "tmux:") { return .tmux(v) }
+        if let v = value(t, "rex:") { return .rex(v) }
         return .word(t)
     }
 
@@ -194,6 +205,9 @@ public struct FilterQuery: Sendable, Hashable {
         case .tmux(let name):
             guard s.kind == .session, let t = s.tmuxSession else { return false }
             return t == name || t.hasPrefix(name)
+        case .rex(let name):
+            guard s.kind == .session, let r = s.rexSession else { return false }
+            return r == name || r.hasPrefix(name)
         case .background: return s.kind == .session && s.hasBackground
         case .shared: return s.kind == .tab && s.shared
         case .sleeping: return s.kind == .tab && s.sleeping

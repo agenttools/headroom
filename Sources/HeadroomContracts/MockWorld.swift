@@ -1,8 +1,8 @@
 // MockWorld — a deterministic, realistic WorldSnapshot (~40 rows) modelled on a typical developer's mix:
 // 15 Chrome tabs in 4 windows (webmail, Maps, claude.ai, localhost, file://, a shared Linear renderer,
 // an audible YouTube, a discarded tab, an incognito tab), 20 Claude sessions across the tmux sessions
-// quote-composer / oakfield-ledger / hub / misc / millrace, 3 leftovers, an agent-browser automation
-// Chrome owned by a session, and one unowned "Other Chrome instances" browser.
+// quote-composer / oakfield-ledger / hub / misc / millrace plus 3 in Rex sessions foundry / studio, 3 leftovers,
+// an agent-browser automation Chrome owned by a session, and one unowned "Other Chrome instances" browser.
 //
 // ItemIDs are stable across calls (start times use a fixed epoch); only ages move with `now`.
 // Used for UI development, the CLI (--mock), and tests. `HEADROOM_MOCK=1` selects it.
@@ -162,6 +162,8 @@ public enum MockWorld {
         var bg: [(String, Double, Bool)] = []       // command, MB, isAutomationBrowser
         var children: [(String, Double)] = []
         var prompt: String? = nil
+        /// Rex session label, 1-based tab, tab label (sessions in Rex have tmux == nil).
+        var rex: (session: String, window: Int, windowLabel: String)? = nil
     }
 
     private static let home = "/Users/jappleseed"
@@ -204,6 +206,12 @@ public enum MockWorld {
           mb: 210, branch: nil, worktree: "gone", idleMinutes: 2 * 24 * 60, cwdMissing: true),
         S(title: "claude (no session file)", cwd: home + "/learning/headroom", tmux: ("hub", 7, 0), mb: 300,
           idleMinutes: 90, unregistered: true),
+        S(title: "rex release notes", cwd: home + "/work/foundry", tmux: nil, mb: 340, busyMinutes: 3,
+          rex: ("foundry", 1, "notes draft")),
+        S(title: "rex docs pass", cwd: home + "/work/foundry", tmux: nil, mb: 290, branch: "docs", idleMinutes: 90,
+          visible: true, rex: ("foundry", 2, "api reference")),
+        S(title: "rex billing spike", cwd: home + "/work/billing", tmux: nil, mb: 260, branch: "spike", idleMinutes: 40,
+          rex: ("studio", 1, "stripe spike")),
     ]
 
     private static func makeClaude(now: Date, owner: inout [Int32: Owner]) -> ClaudeSnapshot {
@@ -229,6 +237,13 @@ public enum MockWorld {
                 TmuxLoc(paneId: "%\(200 + i)", session: t.0, windowName: s.title, windowIndex: t.1, paneIndex: t.2,
                         panePid: pid - 1, visible: s.visible, current: s.visible)
             }
+            let rex = s.rex.map { r in
+                RexLoc(blockId: String(format: "block:0190aaaa-0000-7000-8000-%012x", 0x300 + i),
+                       sessionId: r.session == "foundry" ? "session:0190aaaa-0000-7000-8000-000000000001"
+                                                         : "session:0190aaaa-0000-7000-8000-000000000002",
+                       sessionLabel: r.session, windowId: String(format: "window:0190aaaa-0000-7000-8000-%012x", 0x200 + i),
+                       windowLabel: r.windowLabel, windowIndex: r.window, paneIndex: 1, visible: s.visible)
+            }
             let project = URL(fileURLWithPath: s.cwd.components(separatedBy: "/.claude/worktrees/")[0]).lastPathComponent
             sessions.append(ClaudeSession(
                 key: key, sessionId: String(format: "%08x-0000-4000-8000-%012x", 0xc5d5_0000 + i, 0x1000 + i),
@@ -239,7 +254,7 @@ public enum MockWorld {
                 lastActivity: last, startedAt: Date(timeIntervalSince1970: TimeInterval(key.startSec)),
                 cpuPercent: busy ? 14.5 : 0.1, lastPrompt: s.prompt ?? "continue with \(s.title)",
                 lastAssistant: busy ? "Working on it…" : "Done. Anything else?", awaySummary: nil, tmux: tmux,
-                version: "2.1.285", selfFootprint: .mb(s.mb), selfRSS: .mb(s.mb * 0.8),
+                rex: rex, version: "2.1.285", selfFootprint: .mb(s.mb), selfRSS: .mb(s.mb * 0.8),
                 children: s.children.map { unit($0.0, $0.1, auto: false, bg: false) },
                 background: s.bg.map { unit($0.0, $0.1, auto: $0.2, bg: true) }))
         }

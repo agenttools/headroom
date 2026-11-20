@@ -4,8 +4,9 @@
 //   - one ClaudeSession per live session (OwnershipMap.liveSessions) and per unregistered claude
 //     (Owner.unregisteredClaude); memory = claude + children (ppid tree) + background (env-linked units, including
 //     automation browsers), all taken from the ownership map so nothing is counted twice;
-//   - context from the transcript tail, tmux (resolved live from the ppid chain, never from the JSON `tmux` field),
-//     and .git/HEAD;
+//   - context from the transcript tail, tmux (live, from the ppid chain) or Rex (REX_BLOCK when the ppid chain reaches
+//     a Rex server before any tmux pane; layout from rex ls/session inspect), never from the JSON `tmux` field, and
+//     .git/HEAD;
 //   - busy from combined evidence (BusyTracker);
 //   - one LeftoverGroup per Owner.leftover, titled from closed.jsonl, the dead session's JSON, or its transcript.
 // Paths come from HeadroomEnv (claudeDir, sessionsDir, projectsDir, closedLog); never hard-coded.
@@ -18,6 +19,7 @@ import HeadroomCore
 public final class ClaudeSource: ClaudeProvider, @unchecked Sendable {
     public let env: HeadroomEnv
     public let tmux: TmuxClient
+    public let rex: RexClient
     public let store: SessionStore
     public let tails: TranscriptTail
     public let whereCache = WhereCache()
@@ -27,19 +29,30 @@ public final class ClaudeSource: ClaudeProvider, @unchecked Sendable {
     public var cpuSettle: TimeInterval = 0.3
     /// Test seam: replaces `tmux list-panes` / `list-clients`.
     var tmuxData: (@Sendable () async -> (panes: [TmuxPane], clients: [TmuxClientInfo]))?
+    /// Test seam: replaces `rex ls` + `session inspect` (RexClient.state()); the sessions-first set is ignored.
+    var rexData: (@Sendable () async -> RexState)?
+    /// Test seam: the process table and SysKit Jump's live fallback uses (default LiveSysKit(env: env)).
+    var liveSys: (@Sendable () -> any SysKit)?
     /// Test seam: "now" for busy/idle evaluation (defaults to the table's takenAt).
     var clock: (@Sendable () -> Date)?
 
     private let lock = NSLock()
     /// Where each session's pane was last seen (for jump without a fresh snapshot).
     private var lastPane: [ProcKey: TmuxPane] = [:]
+    /// The same for sessions in Rex (their block, from REX_BLOCK).
+    private var lastRex: [ProcKey: RexLoc] = [:]
+    /// Notes from the last reopen(): a new Rex session that Rex.app could not be asked to show (Remote Control off,
+    /// Rex.app not connected …). The app's Undo toast and `headroom undo` show them.
+    public var lastReopenNotes: [String] { lock.withLock { _reopenNotes } }
+    private var _reopenNotes: [String] = []
     private var closedCache: (stamp: FileStamp, titles: [String: String])?
     private let hostName: String
 
-    public init(env: HeadroomEnv = .current, tmux: TmuxClient? = nil, desktop: (any ClaudeDesktop)? = nil,
-                watch: Bool = true) {
+    public init(env: HeadroomEnv = .current, tmux: TmuxClient? = nil, rex: RexClient? = nil,
+                desktop: (any ClaudeDesktop)? = nil, watch: Bool = true) {
         self.env = env
         self.tmux = tmux ?? TmuxClient(env: env)
+        self.rex = rex ?? RexClient(env: env)
         self.store = SessionStore(dir: env.sessionsDir, watch: watch)
         self.tails = TranscriptTail(projectsDir: env.projectsDir)
         self.desktop = desktop ?? GhosttyDesktop()
@@ -58,8 +71,11 @@ public final class ClaudeSource: ClaudeProvider, @unchecked Sendable {
 
     /// `tmuxState`: panes and clients the caller already fetched this refresh (LiveWorld reuses the ownership
     /// pass's `list-panes` instead of running tmux again); nil = fetch now.
+    /// `rexState`: Rex discovery the caller already ran (LiveWorld's cache); nil = run it now, but only when some
+    /// claude's ppid chain reaches a Rex server (no rex call otherwise).
     public func snapshot(_ t: ProcessTable, _ o: OwnershipMap, _ sys: any SysKit,
-                         tmuxState prefetched: (panes: [TmuxPane], clients: [TmuxClientInfo])?) async -> ClaudeSnapshot {
+                         tmuxState prefetched: (panes: [TmuxPane], clients: [TmuxClientInfo])?,
+                         rexState rexPrefetched: RexState? = nil) async -> ClaudeSnapshot {
         let now = clock?() ?? (t.takenAt == .distantPast ? Date() : t.takenAt)
         let records = store.records(now: now)
         var recByPid: [Int32: SessionRecord] = [:]
@@ -68,9 +84,18 @@ public final class ClaudeSource: ClaudeProvider, @unchecked Sendable {
         if let prefetched { (panes, clients) = (prefetched.panes, prefetched.clients) } else { (panes, clients) = await tmuxState() }
 
         // Sessions to show: registered live ones, then unregistered claude processes.
-        var keys: [(ProcKey, registered: Bool)] = o.liveSessions.map { ($0, true) }
-        let unregistered = Set(o.owner.values.compactMap { if case .unregisteredClaude(let k) = $0 { k } else { nil } })
-        keys += unregistered.sorted().map { ($0, false) }
+        let keys = Self.sessionKeys(o)
+
+        // Rex: which claudes run in a Rex block (pure ppid walk), then their blocks' layout (rex calls only if any).
+        let inRex = Self.rexKeys(keys.map(\.0), in: t, sys: sys, tmuxPanePids: Set(panes.map(\.panePid)))
+        let rexNow: RexState
+        if inRex.isEmpty {
+            rexNow = .empty
+        } else if let rexPrefetched {
+            rexNow = rexPrefetched
+        } else {
+            rexNow = await rexState(sessionsFirst: Self.rexSessionIds(inRex, sys: sys))
+        }
 
         // Units per session (children: ppid tree; background: env-linked).
         var childUnits: [ProcKey: [LinkedUnit]] = [:]
@@ -97,11 +122,23 @@ public final class ClaudeSource: ClaudeProvider, @unchecked Sendable {
         var sessions: [ClaudeSession] = []
         var usedTranscripts: Set<String> = []
         var panesSeen: [ProcKey: TmuxPane] = [:]
+        var rexSeen: [ProcKey: RexLoc] = [:]
         for (k, registered) in keys {
             guard let s = t.byPid[k.pid], s.key == k else { continue }
             let rec = registered ? recByPid[k.pid] : nil
-            let pane = Self.pane(for: k.pid, in: t, panes: panes)
+            let pane: TmuxPane?
+            let rexLoc: RexLoc?
+            if inRex.contains(k) {
+                // The nearest boundary is a Rex server, so any tmux pane further up is not where it runs.
+                let e = sys.args(k)?.env
+                rexLoc = RexClient.locate(blockEnv: e?["REX_BLOCK"], sessionEnv: e?["REX_SESSION"], state: rexNow)
+                pane = nil
+            } else {
+                rexLoc = nil
+                pane = Self.pane(for: k.pid, in: t, panes: panes)
+            }
             if let pane { panesSeen[k] = pane }
+            if let rexLoc { rexSeen[k] = rexLoc }
             let argv = sys.args(k)?.argv ?? []
             let sessionId = rec?.sessionId ?? Self.sessionIdFromArgv(argv) ?? ""
             let cwd = rec?.cwd ?? sys.cwd(k.pid) ?? ""
@@ -134,7 +171,7 @@ public final class ClaudeSource: ClaudeProvider, @unchecked Sendable {
                 statusSince: since, lastActivity: tail.lastActivity, startedAt: startedAt,
                 cpuPercent: cpu[k] ?? 0, lastPrompt: tail.lastPrompt, lastAssistant: tail.lastAssistant,
                 awaySummary: tail.awaySummary, tmux: pane.map { TmuxClient.location(of: $0, clients: clients) },
-                kind: rec?.kind ?? (registered ? "interactive" : "unregistered"),
+                rex: rexLoc, kind: rec?.kind ?? (registered ? "interactive" : "unregistered"),
                 version: rec?.version ?? Self.versionFromPath(s.path),
                 selfFootprint: s.footprint, selfRSS: s.rss, children: kids, background: bgUnits[k] ?? []))
         }
@@ -143,7 +180,7 @@ public final class ClaudeSource: ClaudeProvider, @unchecked Sendable {
 
         busyTracker.prune(keeping: Set(keys.map(\.0)))
         tails.prune(keeping: usedTranscripts)
-        lock.withLock { lastPane = panesSeen }
+        lock.withLock { lastPane = panesSeen; lastRex = rexSeen }
 
         sessions.sort { ($0.total, $0.key.pid) > ($1.total, $1.key.pid) }
         return ClaudeSnapshot(sessions: sessions, leftovers: leftovers, staleFiles: o.staleSessionFiles)
@@ -167,6 +204,56 @@ public final class ClaudeSource: ClaudeProvider, @unchecked Sendable {
         if let p = byPid[pid] { return p }                 // claude exec'd as the pane command itself
         for a in t.ancestors(of: pid) { if let p = byPid[a] { return p } }
         return nil
+    }
+
+    /// The sessions a snapshot shows: registered live ones, then unregistered claude processes.
+    static func sessionKeys(_ o: OwnershipMap) -> [(ProcKey, registered: Bool)] {
+        var keys: [(ProcKey, registered: Bool)] = o.liveSessions.map { ($0, true) }
+        let unregistered = Set(o.owner.values.compactMap { if case .unregisteredClaude(let k) = $0 { k } else { nil } })
+        keys += unregistered.sorted().map { ($0, false) }
+        return keys
+    }
+
+    // MARK: - Rex
+
+    /// The keys whose nearest multiplexer boundary up the ppid chain is a Rex server (a tmux pane or tmux process
+    /// met first means tmux). Pure, no rex call; empty when no Rex server is in the table.
+    static func rexKeys(_ keys: [ProcKey], in t: ProcessTable, sys: any SysKit,
+                        tmuxPanePids: Set<Int32>) -> Set<ProcKey> {
+        let topo = RexProcess.topology(in: t, sys: sys)
+        guard !topo.servers.isEmpty else { return [] }
+        return Set(keys.filter { k in
+            guard t.byPid[k.pid]?.key == k else { return false }
+            if case .rex = RexProcess.boundary(of: k.pid, in: t, topology: topo, sys: sys, tmuxPanePids: tmuxPanePids) {
+                return true
+            }
+            return false
+        })
+    }
+
+    /// The Rex sessions the claudes in `keys` name in their REX_SESSION (discovery inspects these first).
+    static func rexSessionIds(_ keys: Set<ProcKey>, sys: any SysKit) -> Set<String> {
+        Set(keys.compactMap { sys.args($0)?.env["REX_SESSION"] }.filter { $0.hasPrefix("session:") })
+    }
+
+    /// nil when no live or unregistered claude in `o` has RexBoundary .rex (pure; no rex call). Otherwise the Rex
+    /// sessions those claudes name (possibly empty), which discovery inspects first. LiveWorld runs Rex discovery
+    /// (`rex ls` + `session inspect`) only when this is not nil.
+    public static func rexSessionsNeeded(_ t: ProcessTable, _ o: OwnershipMap, _ sys: any SysKit,
+                                         tmuxPanes: [TmuxPane]) -> Set<String>? {
+        let keys = rexKeys(sessionKeys(o).map(\.0), in: t, sys: sys, tmuxPanePids: Set(tmuxPanes.map(\.panePid)))
+        return keys.isEmpty ? nil : rexSessionIds(keys, sys: sys)
+    }
+
+    /// Some live or unregistered claude in `o` has RexBoundary .rex (pure; no rex call).
+    public static func rexNeeded(_ t: ProcessTable, _ o: OwnershipMap, _ sys: any SysKit, tmuxPanes: [TmuxPane]) -> Bool {
+        rexSessionsNeeded(t, o, sys, tmuxPanes: tmuxPanes) != nil
+    }
+
+    /// A discovery pass. `sessionsFirst`: the sessions to inspect first and always (RexClient.state(sessionsFirst:)).
+    func rexState(sessionsFirst: Set<String> = []) async -> RexState {
+        if let rexData { return await rexData() }
+        return await rex.state(sessionsFirst: sessionsFirst)
     }
 
     // MARK: - Leftovers
@@ -264,82 +351,215 @@ public final class ClaudeSource: ClaudeProvider, @unchecked Sendable {
 
     // MARK: - Jump (§7.6)
 
-    public func jump(_ s: ProcKey) async {
+    public func jump(_ s: ProcKey) async { _ = await jumpNote(s) }
+
+    /// Jump, then a note for the user when Jump could not finish the switch (Rex only; nil = nothing to say).
+    /// Like tmux's jump it is not gated by HEADROOM_DRY_RUN: it changes what is shown, never what runs.
+    public func jumpNote(_ s: ProcKey) async -> String? {
+        if let r = lock.withLock({ lastRex[s] }) { return await rexJump(blockId: r.blockId) }
         let (panes, clients) = await tmuxState()
         let remembered = lock.withLock { lastPane[s] }
         var pane: TmuxPane?
         if let r = remembered, let p = panes.first(where: { $0.paneId == r.paneId && $0.panePid == r.panePid }) {
             pane = p
         } else {
-            // No fresh snapshot (e.g. the CLI): resolve from the live process table.
-            let sk = LiveSysKit(env: env)
+            // No snapshot placed this session (e.g. no REX_BLOCK at snapshot time, or Jump before any snapshot):
+            // resolve from the live process table.
+            let sk: any SysKit = liveSys?() ?? LiveSysKit(env: env)
             let t = sk.scan()
-            if t.byPid[s.pid]?.key == s { pane = Self.pane(for: s.pid, in: t, panes: panes) }
+            if t.byPid[s.pid]?.key == s {
+                let topo = RexProcess.topology(in: t, sys: sk)
+                if !topo.servers.isEmpty,
+                   case .rex = RexProcess.boundary(of: s.pid, in: t, topology: topo, sys: sk,
+                                                   tmuxPanePids: Set(panes.map(\.panePid))) {
+                    return await rexJump(blockId: sk.args(s)?.env["REX_BLOCK"])
+                }
+                pane = Self.pane(for: s.pid, in: t, panes: panes)
+            }
         }
         guard let pane else {
             await desktop.focusTerminal(windowName: nil)       // not in tmux: bring the terminal app forward
-            return
+            return nil
         }
         guard !clients.isEmpty else {
             await desktop.noClientAttached(attachCommand: "tmux attach -t \(Self.shellQuote(pane.session))")
-            return
+            return nil
         }
         if await tmux.jump(paneId: pane.paneId) {
             await desktop.focusTerminal(windowName: pane.windowName)
         } else {
             await desktop.noClientAttached(attachCommand: "tmux attach -t \(Self.shellQuote(pane.session))")
         }
+        return nil
+    }
+
+    /// Rex Jump (§7.6): `rex focus -s SID BID` on the server, bring Rex.app forward, then ask the app to show the
+    /// session's tab (`do session.select`, a client action that needs Remote Control in Rex). Rex has no attach
+    /// command to hand the user, so a failure becomes a note that says why.
+    private func rexJump(blockId: String?) async -> String? {
+        let st = await rexState()
+        guard let id = blockId, let b = st.blocks.first(where: { $0.blockId == id }) else {
+            await desktop.focusRex()
+            return "Rex could not find this session's pane, so Rex was only brought forward."
+        }
+        _ = await rex.focus(session: b.sessionId, block: b.blockId)
+        await desktop.focusRex()                    // before the client action: it needs the app in front
+        guard let why = await rexSelect(session: b.sessionId, window: b.windowId, known: st, action: "Jump") else {
+            return nil
+        }
+        return "If Rex shows another session, open “\(Self.rexSessionName(id: b.sessionId, label: b.sessionLabel))”. "
+            + why
+    }
+
+    /// Asks Rex.app on this Mac (already brought forward) to show `window` of `session` with `do session.select`,
+    /// sent to a connected LOCAL app client (RexClient.jumpClient). `known`: a discovery pass made before Rex.app came
+    /// forward; when it has no local client, the state is read again (Rex.app may have just connected). With no local
+    /// client while another device's app is connected, nothing is sent: rex's default client would be that device.
+    /// nil when Rex.app switched; otherwise the reason, for the note (`action`: "Jump" or "Undo").
+    private func rexSelect(session: String, window: String, known: RexState?, action: String) async -> String? {
+        let st: RexState
+        if let known, RexClient.jumpClient(session: session, state: known) != nil {
+            st = known
+        } else {
+            st = await rexState()
+        }
+        let c = RexClient.jumpClient(session: session, state: st)
+        if c == nil, RexClient.remoteAppConnected(st) {
+            return "Rex.app on this Mac is not connected to the Rex server, and Headroom does not switch Rex on "
+                + "another device."
+        }
+        let r = await rex.select(session: session, window: window, client: c?.clientId)
+        return r.ok ? nil : RexClient.selectFailureReason(r, action: action)
+    }
+
+    /// A Rex session's label, or "…" + the last 6 characters of its id when it has none (as RexLoc.sessionName).
+    static func rexSessionName(id: String, label: String) -> String {
+        label.isEmpty ? "…" + String(id.suffix(6)) : label
     }
 
     // MARK: - Reopen (§7.7 session Undo)
 
     /// `tmux new-window -d -t '<sess>:' -n '<title>' -c '<cwd>'` + `send-keys 'claude --resume <sid>' Enter`.
     /// If the tmux session is gone it is recreated and then jumped to. HEADROOM_DRY_RUN=1 → .dryRun, nothing runs.
+    /// A record of a session that ran in Rex (rexSessionId/rexSessionLabel), or one in neither multiplexer when only
+    /// rex is installed, reopens in Rex instead (reopenRex). Notes for the user (a new Rex session Rex.app could not
+    /// be asked to show) replace lastReopenNotes.
     public func reopen(_ r: [ClosedRecord]) async -> [ClosedRecord: Outcome] {
         var out: [ClosedRecord: Outcome] = [:]
+        var notes: [String] = []
         let live = store.records()
         for rec in r {
-            out[rec] = await reopenOne(rec, liveRecords: live)
+            let (o, n) = await reopenOne(rec, liveRecords: live)
+            out[rec] = o
+            if let n { notes.append(n) }
         }
+        lock.withLock { _reopenNotes = notes }
         return out
     }
 
     public static let fallbackTmuxSession = "headroom"
+    /// The Rex session Undo opens a tab in when the record names none (created when missing).
+    public static let fallbackRexSession = "headroom"
 
-    func reopenOne(_ rec: ClosedRecord, liveRecords: [SessionRecord]) async -> Outcome {
+    /// The outcome, and a note for the user when there is something to say (Rex only).
+    func reopenOne(_ rec: ClosedRecord, liveRecords: [SessionRecord]) async -> (Outcome, String?) {
         guard rec.kind == "session", let sid = rec.sessionId, TranscriptTail.isSafeId(sid) else {
-            return .failed("not a restorable session record")
+            return (.failed("not a restorable session record"), nil)
         }
         if let running = liveRecords.first(where: { $0.sessionId == sid }), let pid = running.pid,
            Self.processLooksLive(pid: pid, startedAtMs: running.startedAt) {
-            return .failed("session \(sid) is still running (pid \(pid))")
+            return (.failed("session \(sid) is still running (pid \(pid))"), nil)
         }
-        guard let cwd = rec.cwd, !cwd.isEmpty else { return .failed("no working directory recorded") }
+        guard let cwd = rec.cwd, !cwd.isEmpty else { return (.failed("no working directory recorded"), nil) }
         var isDir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: cwd, isDirectory: &isDir), isDir.boolValue else {
-            return .failed("working directory \(cwd) no longer exists")
+            return (.failed("working directory \(cwd) no longer exists"), nil)
         }
-        if env.dryRun { return .dryRun }
-        let session = SessionTitle.nonEmpty(rec.tmuxSession) ?? Self.fallbackTmuxSession
-        let existed = await tmux.hasSession(session)
-        guard let paneId = await tmux.newWindow(session: session, name: Self.windowName(rec.title), cwd: cwd) else {
-            return .failed("tmux could not open a window in \(session)")
-        }
-        guard await tmux.sendKeys(pane: paneId, "claude --resume \(sid)") else {
-            return .failed("tmux send-keys failed for \(paneId)")
-        }
-        if !existed {
-            let clients = await tmux.clients()
-            if clients.isEmpty {
-                await desktop.noClientAttached(attachCommand: "tmux attach -t \(Self.shellQuote(session))")
-            } else if await tmux.jump(paneId: paneId) {
-                await desktop.focusTerminal(windowName: Self.windowName(rec.title))
+        if env.dryRun { return (.dryRun, nil) }
+        let rexRecorded = SessionTitle.nonEmpty(rec.rexSessionId) != nil || SessionTitle.nonEmpty(rec.rexSessionLabel) != nil
+        let tmuxRecorded = SessionTitle.nonEmpty(rec.tmuxSession) != nil
+        let fm = FileManager.default
+        let useRex = rexRecorded || (!tmuxRecorded && !fm.isExecutableFile(atPath: env.tmuxPath)
+                                     && fm.isExecutableFile(atPath: env.rexPath))
+        if !useRex {
+            let session = SessionTitle.nonEmpty(rec.tmuxSession) ?? Self.fallbackTmuxSession
+            let existed = await tmux.hasSession(session)
+            guard let paneId = await tmux.newWindow(session: session, name: Self.windowName(rec.title), cwd: cwd) else {
+                return (.failed("tmux could not open a window in \(session)"), nil)
             }
+            guard await tmux.sendKeys(pane: paneId, "claude --resume \(sid)") else {
+                return (.failed("tmux send-keys failed for \(paneId)"), nil)
+            }
+            if !existed {
+                let clients = await tmux.clients()
+                if clients.isEmpty {
+                    await desktop.noClientAttached(attachCommand: "tmux attach -t \(Self.shellQuote(session))")
+                } else if await tmux.jump(paneId: paneId) {
+                    await desktop.focusTerminal(windowName: Self.windowName(rec.title))
+                }
+            }
+            return (.done, nil)
         }
-        return .done
+        return await reopenRex(rec, sid: sid, cwd: cwd)
     }
 
-    /// A tmux window name: one line, at most 30 characters.
+    /// Rex Undo (§7.7): a new tab (`window new … --focus=false`) in the recorded session (by id, else by label), or a
+    /// new session (`new`) when neither exists; then `send 'claude --resume <sid>'` + `send-key enter` into its block.
+    /// A `window new`/`new` that failed or timed out may still have worked, so the session is compared before and
+    /// after the call and the one new tab (or session) is adopted rather than opening a second one. A created
+    /// session is then shown (Rex.app forward, `do session.select`); when Rex.app cannot be asked to show it, the
+    /// outcome stays .done (the session was reopened) and a note names the new session. Rex is never started: when it
+    /// is not running Undo fails and the record stays restorable.
+    func reopenRex(_ rec: ClosedRecord, sid: String, cwd: String) async -> (Outcome, String?) {
+        guard FileManager.default.isExecutableFile(atPath: env.rexPath) else {
+            return (.failed("rex is not installed (\(env.rexPath))"), nil)
+        }
+        guard let refs = await rex.sessions() else {
+            return (.failed("Rex is not running (open Rex, then Undo again)"), nil)
+        }
+        let label = SessionTitle.nonEmpty(rec.rexSessionLabel) ?? Self.fallbackRexSession
+        let name = Self.windowName(rec.title)
+        let recordedId = SessionTitle.nonEmpty(rec.rexSessionId)
+        let target = refs.first { recordedId != nil && $0.sessionId == recordedId } ?? refs.first { $0.label == label }
+        let made: RexNewTerminal
+        let created: Bool
+        if let target {
+            // Recovery needs a known "before": with a failed inspect, an older tab of the same name could be adopted.
+            let before = await rex.inspect(target.sessionId)?.blocks
+            var m = await rex.newWindow(session: target.sessionId, name: name, cwd: cwd)
+            if m == nil, let before {
+                m = RexClient.recoverNewWindow(before: before, after: await rex.inspect(target.sessionId)?.blocks ?? [],
+                                               sessionId: target.sessionId, name: name)
+            }
+            guard let m else {
+                return (.failed("Rex could not open a tab in “\(Self.rexSessionName(id: target.sessionId, label: target.label))”"), nil)
+            }
+            (made, created) = (m, false)
+        } else {
+            var m = await rex.newSession(label: label, cwd: cwd, windowName: name)
+            if m == nil,
+               let id = RexClient.recoverNewSession(before: refs, after: await rex.sessions() ?? [], label: label),
+               let ins = await rex.inspect(id), let b = ins.blocks.first {
+                m = RexNewTerminal(sessionId: id, windowId: b.windowId, blockId: b.blockId)
+            }
+            guard let m else { return (.failed("Rex could not create session “\(label)”"), nil) }
+            (made, created) = (m, true)
+        }
+        guard await rex.sendLine(session: made.sessionId, block: made.blockId, "claude --resume \(sid)") else {
+            return (.failed("Rex opened a tab but could not type the resume command"), nil)
+        }
+        if created {
+            // A new session is not shown by any app yet (window new into an existing one leaves the view alone).
+            await desktop.focusRex()
+            if let why = await rexSelect(session: made.sessionId, window: made.windowId, known: nil, action: "Undo") {
+                let n = Self.rexSessionName(id: made.sessionId, label: label)
+                return (.done, "Resumed in the new Rex session “\(n)”; open it in Rex. " + why)
+            }
+        }
+        return (.done, nil)
+    }
+
+    /// A tmux window name (and a Rex tab label): one line, at most 30 characters.
     static func windowName(_ title: String) -> String {
         let one = title.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespaces)
         let s = one.isEmpty ? "claude" : one

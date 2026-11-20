@@ -127,6 +127,8 @@ public final class MockExecutor: ActionExecutor, PeekProvider, @unchecked Sendab
         case .session(let k):
             if let s = w.claude.sessions.first(where: { $0.key == k }) {
                 r.sessionId = s.sessionId; r.cwd = s.cwd; r.tmuxSession = s.tmux?.session
+                r.rexSessionId = s.rex?.sessionId
+                r.rexSessionLabel = (s.rex?.sessionLabel).flatMap { $0.isEmpty ? nil : $0 }
             }
         case .leftover:
             if let l = w.claude.leftovers.first(where: { $0.id == item.id }) { r.argv = l.unit.argv; r.cwd = l.unit.cwd }
@@ -144,11 +146,18 @@ public final class MockExecutor: ActionExecutor, PeekProvider, @unchecked Sendab
         state.reopen(ok)
         return Dictionary(uniqueKeysWithValues: r.map { ($0, $0.restorable ? Outcome.dryRun : .failed("not restorable")) })
     }
+    /// jumpNote: the protocol default (jump, no note).
     public func jump(_ id: ItemID) async {}
     public func recentlyClosed() async -> [ClosedRecord] { state.recent }
 
-    // PeekProvider: canned output, never runs tmux or lsof.
-    public func capturePane(_ paneId: String) async -> String? {
+    // PeekProvider: canned output, never runs tmux, rex or lsof.
+    public func capturePane(_ paneId: String) async -> String? { Self.cannedPane("mock pane \(paneId)") }
+
+    public func captureRexBlock(sessionId: String, blockId: String) async -> String? {
+        Self.cannedPane("mock Rex pane \(blockId.suffix(6))")
+    }
+
+    static func cannedPane(_ tag: String) -> String {
         """
         ⏺ Done. The ledger sync now rounds half-even and the tests pass.
 
@@ -157,7 +166,7 @@ public final class MockExecutor: ActionExecutor, PeekProvider, @unchecked Sendab
         ╭──────────────────────────────────────────────╮
         │ >                                            │
         ╰──────────────────────────────────────────────╯
-          ? for shortcuts                (mock pane \(paneId))
+          ? for shortcuts                (\(tag))
         """
     }
     public func listeningPorts(_ pids: [Int32]) async -> [String] {

@@ -1,5 +1,6 @@
 // A scratch ~/.claude (sessions JSON + transcripts) plus a matching synthetic process table, for the Claude tests.
-// Everything lives under a fresh temporary directory; nothing touches the real ~/.claude, tmux or processes.
+// Everything lives under a fresh temporary directory; nothing touches the real ~/.claude, tmux, Rex or processes
+// (rex points at /nonexistent/rex, and Rex state comes from the `rexData` seam).
 
 import Foundation
 import HeadroomContracts
@@ -67,8 +68,24 @@ func procStartString(_ sec: Int) -> String {
     return f.string(from: Date(timeIntervalSince1970: TimeInterval(sec)))
 }
 
+/// Counts calls of a test seam.
+final class CallCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var n = 0
+    var count: Int { lock.withLock { n } }
+    func bump() { lock.withLock { n += 1 } }
+}
+
 /// The fixture world (see ClaudeFixtureTests for what each row exercises).
 struct ClaudeWorld {
+    // Rex rows (withRex: true): one Rex session "foundry" with blocks b1 (tab 2, visible) and b2 (tab 3, not active).
+    static let rexS1 = "session:0190cccc-0000-7000-8000-000000000001"
+    static func rexBlock(_ n: String) -> String { "block:0190cccc-0000-7000-8000-0000000000\(n)" }
+    static func rexWindow(_ n: Int) -> String { "window:0190cccc-0000-7000-8000-00000000000\(n)" }
+    static let rexClient = "client:0190cccc-0000-7000-8000-0000000000c1"
+    /// Session id of the Rex-world claude `pid` (306…310).
+    static func sidRex(_ pid: Int32) -> String { "aaaa0\(pid)-0000-4000-8000-000000000\(pid)" }
+
     static let base = 1_790_000_000
     static let now = Date(timeIntervalSince1970: TimeInterval(base + 20_000))
     static let claudePath = "/Users/fixture/.local/share/claude/versions/2.1.284"
@@ -86,16 +103,23 @@ struct ClaudeWorld {
     var sys: StaticSysKit
     var panes: [TmuxPane]
     var clients: [TmuxClientInfo]
+    /// What the `rexData` seam returns (`rex ls` + `session inspect`).
+    var rexState: RexState = .empty
+    /// Calls of the `rexData` seam by sources made with source().
+    let rexCalls = CallCounter()
     var repo: String { dir.path + "/work/repo" }
     var worktree: String { dir.path + "/work/repo/.claude/worktrees/wt1" }
     var plain: String { dir.path + "/work/plain" }
     var gone: String { dir.path + "/work/gone" }
 
-    init() {
+    /// withRex adds a Rex server (700) whose blocks' shells (702, 704, 705) sit under root-owned `login`s the table
+    /// leaves out (701, 703, 706: only parentPid knows them), claudes 306/307/310 in those blocks, claude 308 with a
+    /// stale REX_BLOCK under launchd, and claude 309 in tmux pane %5 with an inherited REX_BLOCK.
+    init(withRex: Bool = false) {
         env = HeadroomEnv(environment: [
             "HOME": dir.path, "HEADROOM_CLAUDE_DIR": dir.path + "/.claude",
             "HEADROOM_SUPPORT_DIR": dir.path + "/support", "HEADROOM_DRY_RUN": "1",
-            "HEADROOM_TMUX": "/nonexistent/tmux", "CLAUDE_PID": "302"])
+            "HEADROOM_TMUX": "/nonexistent/tmux", "HEADROOM_REX": "/nonexistent/rex", "CLAUDE_PID": "302"])
         let b = Self.base
         let now = Self.now
         let dir = self.dir
@@ -136,6 +160,12 @@ struct ClaudeWorld {
         session(998, Self.sidDead2, cwd: plain, start: b - 50_000, name: "old-name", nameSource: "derived",
                 status: "idle", statusAgo: 90_000)
         dir.write(".claude/sessions/997.json", "{\"pid\": 997, \"sessionId\": ")   // half-written: skipped
+        if withRex {
+            for pid: Int32 in [306, 307, 308, 309, 310] {
+                session(pid, Self.sidRex(pid), cwd: plain, start: b + 600 + Int(pid - 306) * 10, name: "rex-\(pid)",
+                        nameSource: "user", status: "idle", statusAgo: 3600)
+            }
+        }
 
         // Transcripts.
         let projA = ".claude/projects/" + TranscriptTail.projectDirName(cwd: repo)
@@ -201,8 +231,30 @@ struct ClaudeWorld {
         // Leftover 620: dead CLAUDE_PID 998 (whose session file is stale), titled from the dead transcript.
         p(620, 1, "/opt/homebrew/bin/python3", ["python3", "-m", "http.server"], mb: 30, start: b - 49_000,
           env: ["CLAUDE_PID": "998", "CLAUDE_CODE_SESSION_ID": Self.sidDead2])
+        var parents: [Int32: Int32] = [:]
+        if withRex {
+            // server → /usr/bin/login (root; not in the table) → -zsh → claude, as on a live Mac.
+            let server = dir.path + "/Library/Application Support/com.superlogical.rex/RexServer/Versions/Current/"
+                + "Rex Server.app/Contents/MacOS/rex"
+            p(700, 1, server, [server, "server", "run", "--listen", "unix:///x/server.sock"], mb: 60, start: b - 2000)
+            parents = [701: 700, 703: 700, 706: 700]
+            for (i, (shell, login)) in [(Int32(702), Int32(701)), (704, 703), (705, 706)].enumerated() {
+                p(shell, login, "/bin/zsh", ["-zsh"], mb: 2, start: b + 550 + i)
+            }
+            func rexEnv(_ block: String, session: String? = Self.rexS1) -> [String: String] {
+                var e = ["REX_BLOCK": Self.rexBlock(block)]
+                if let session { e["REX_SESSION"] = session }
+                return e
+            }
+            p(306, 702, Self.claudePath, ["claude"], mb: 110, start: b + 600, env: rexEnv("b1"))
+            p(307, 704, Self.claudePath, ["claude"], mb: 105, start: b + 610, env: rexEnv("b2"))
+            p(308, 1, Self.claudePath, ["claude"], mb: 100, start: b + 620, env: rexEnv("b1"))          // stale env
+            p(205, 100, "/bin/zsh", ["-zsh"], mb: 2, start: b + 54)
+            p(309, 205, Self.claudePath, ["claude"], mb: 95, start: b + 630, env: rexEnv("b1"))        // tmux in Rex
+            p(310, 705, Self.claudePath, ["claude"], mb: 90, start: b + 640, env: rexEnv("b9"))        // undiscovered
+        }
         table = ProcessTable(samples: s, takenAt: now)
-        sys = StaticSysKit(table: table, args: args, cwds: cwds)
+        sys = StaticSysKit(table: table, args: args, cwds: cwds, parents: parents)
 
         func pane(_ id: String, _ pid: Int32, active: Bool, winActive: Bool, attached: Int, session: String,
                   win: Int, title: String) -> TmuxPane {
@@ -217,6 +269,21 @@ struct ClaudeWorld {
             pane("%4", 204, active: true, winActive: true, attached: 0, session: "misc", win: 2, title: "fixture-host"),
         ]
         clients = [TmuxClientInfo(activity: 1_790_019_000, tty: "/dev/ttys001", session: "hub")]
+        if withRex {
+            panes.append(pane("%5", 205, active: true, winActive: true, attached: 0, session: "nested", win: 1, title: ""))
+            func blk(_ id: String, win: Int, label: String, active: Bool) -> RexBlock {
+                RexBlock(blockId: Self.rexBlock(id), sessionId: Self.rexS1, sessionLabel: "foundry",
+                         windowId: Self.rexWindow(win), windowLabel: label, windowIndex: win, paneIndex: 1, label: "shell",
+                         windowActive: active, zoomed: false, windowZoomed: false, floating: false, minimized: false,
+                         sessionAttached: true)
+            }
+            rexState = RexState(
+                reachable: true, complete: true, sessions: [RexSessionRef(sessionId: Self.rexS1, label: "foundry")],
+                blocks: [blk("b1", win: 2, label: "api reference", active: true),
+                         blk("b2", win: 3, label: "notes", active: false)],
+                appClients: [Self.rexS1: [RexAppClient(clientId: Self.rexClient, local: true, connected: true,
+                                                       connectedAt: now - 600)]])
+        }
     }
 
     func assign() -> OwnershipMap {
@@ -225,11 +292,13 @@ struct ClaudeWorld {
                                 excluding: [], uid: nil)
     }
 
-    func source(desktop: RecordingDesktop = RecordingDesktop()) -> ClaudeSource {
+    func source(desktop: any ClaudeDesktop = RecordingDesktop()) -> ClaudeSource {
         let src = ClaudeSource(env: env, desktop: desktop, watch: false)
         src.cpuSettle = 0
         let p = panes, c = clients
         src.tmuxData = { (p, c) }
+        let rs = rexState, counter = rexCalls
+        src.rexData = { counter.bump(); return rs }
         src.clock = { ClaudeWorld.now }
         return src
     }

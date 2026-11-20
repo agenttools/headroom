@@ -49,6 +49,20 @@ import HeadroomContracts
             #expect(ProcArgsParser.keeps(k), "\(k)")
         }
     }
+
+    @Test func rexPlacementKeysAreKept() {
+        // A claude in a Rex block carries its block and session ids; the server socket, the bin dir and
+        // TERM_PROGRAM are not needed and stay dropped.
+        let env = ["REX_SESSION=session:0190bbbb-0000-7000-8000-00000000000a",
+                   "REX_BLOCK=block:0190bbbb-0000-7000-8000-0000000000a3",
+                   "REX_SERVER=unix:///Users/t/Library/Application%20Support/rex/server.sock",
+                   "REX_BIN_DIR=/Users/t/Library/Application Support/com.superlogical.rex/RexServer/Versions/Current/Rex Server.app/Contents/MacOS",
+                   "TERM_PROGRAM=rex", "TERM_PROGRAM_VERSION=0.1.0-preview.20", "CLAUDE_PID=4242"]
+        #expect(ProcArgsParser.filterEnv(env) == ["REX_SESSION": "session:0190bbbb-0000-7000-8000-00000000000a",
+                                                  "REX_BLOCK": "block:0190bbbb-0000-7000-8000-0000000000a3",
+                                                  "CLAUDE_PID": "4242"])
+        for k in ["REX_SERVER", "REX_BIN_DIR", "REX_CLIENT", "TERM_PROGRAM"] { #expect(!ProcArgsParser.keeps(k), "\(k)") }
+    }
 }
 
 /// A non-Apple sleeper compiled once per test run. Apple platform binaries (/bin/sleep, perl, zsh …) have their
@@ -145,6 +159,15 @@ final class OwnChild {
         #expect(abs(Double(ours) - Double(theirs)) / Double(theirs) <= 0.01, "\(ours) vs \(theirs)")
     }
 
+    @Test func parentPidAnswersForAnyLivePid() throws {
+        #expect(sk.parentPid(getpid()) == getppid())
+        #expect(sk.parentPid(999_999) == nil)
+        let c = try OwnChild()
+        defer { c.stop() }
+        #expect(sk.parentPid(c.pid) == getpid())
+        #expect(sk.parentPid(1) == nil)                                       // launchd's parent is 0
+    }
+
     @Test func systemMemoryIsSane() {
         let m = sk.systemMemory()
         #expect(m.total >= 8 << 30)
@@ -152,6 +175,41 @@ final class OwnChild {
         #expect(m.used == m.appMemory + m.wired + m.compressed)
         #expect(m.swapUsed <= m.swapTotal)
         #expect(Pressure.allCases.contains(m.pressure))
+    }
+
+    @Test func argsAreReadAgainAfterExec() throws {
+        // A pane shell that runs `exec claude`: same pid and start time (same ProcKey), new image, new argv and env.
+        // Here bash (a platform binary, env hidden) waits for a line, then execs the non-Apple dummy.
+        let local = LiveSysKit(env: HeadroomEnv(environment: [:]))
+        let p = Process()
+        let stdin = Pipe()
+        p.executableURL = URL(fileURLWithPath: "/bin/bash")
+        p.arguments = ["-c", "read x; exec \"$0\" 30", Dummy.path]
+        p.environment = ["REX_BLOCK": "block:0190eeee-0000-7000-8000-000000000001",
+                         "REX_SESSION": "session:0190eeee-0000-7000-8000-000000000002"]
+        p.standardInput = stdin
+        p.standardOutput = FileHandle.nullDevice
+        p.standardError = FileHandle.nullDevice
+        try p.run()
+        defer {
+            try? stdin.fileHandleForWriting.close()
+            if p.isRunning { p.terminate() }
+            for _ in 0..<200 where p.isRunning { usleep(10_000) }
+        }
+        let key = try #require(local.scan().byPid[p.processIdentifier]?.key)
+        #expect(local.args(key)?.argv0 == "/bin/bash")
+        stdin.fileHandleForWriting.write(Data("go\n".utf8))
+        var path = ""
+        for _ in 0..<150 where path != Dummy.path {
+            path = local.scan().byPid[p.processIdentifier]?.path ?? ""
+            if path != Dummy.path { usleep(20_000) }
+        }
+        try #require(path == Dummy.path, "the shell did not exec within 3 s")
+        #expect(local.scan().byPid[p.processIdentifier]?.key == key)        // the same ProcKey
+        let after = try #require(local.args(key))
+        #expect(after.argv == [Dummy.path, "30"])
+        #expect(after.env == ["REX_BLOCK": "block:0190eeee-0000-7000-8000-000000000001",
+                              "REX_SESSION": "session:0190eeee-0000-7000-8000-000000000002"])
     }
 
     @Test func argsCacheIsPrunedToLiveKeys() throws {
@@ -233,6 +291,24 @@ final class OwnChild {
         #expect(sys.args(ProcKey(pid: 41259, startSec: 1)) == nil)
         #expect(sys.isAlive(k))
         #expect(sys.scan().byPid.count == fx.table.byPid.count)
+    }
+
+    @Test func parentPidFromTableThenParents() {
+        let t = ProcessTable(samples: [ProcSample(key: ProcKey(pid: 702, startSec: 1), ppid: 701, pgid: 702,
+                                                  path: "/bin/zsh", footprint: 1, rss: 1)])
+        let sys = StaticSysKit(table: t, parents: [701: 700, 702: 9])
+        #expect(sys.parentPid(702) == 701)                                     // the table wins
+        #expect(sys.parentPid(701) == 700)                                     // a process the table leaves out
+        #expect(sys.parentPid(700) == nil)
+        // A fake that does not implement parentPid gets the protocol default.
+        struct Bare: SysKit {
+            func scan() -> ProcessTable { .empty }
+            func args(_ k: ProcKey) -> ProcArgs? { nil }
+            func cwd(_ pid: Int32) -> String? { nil }
+            func systemMemory() -> SystemMemory { .zero }
+            func isAlive(_ k: ProcKey) -> Bool { false }
+        }
+        #expect(Bare().parentPid(1) == nil)
     }
 }
 

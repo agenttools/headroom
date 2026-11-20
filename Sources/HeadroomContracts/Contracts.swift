@@ -8,7 +8,7 @@
 //  - Tab ids are only unique per browser, so tab sets use TabRef(browserPid, tabId), not Int.
 //  - Every public struct has an explicit public init (Swift's memberwise init is internal).
 //  - Most types are Codable so `Headroom --dump-json` can print a WorldSnapshot directly.
-//  - Ownership inputs (SessionRecord, TmuxPane, Wire.HostHello) live here so HeadroomCore can
+//  - Ownership inputs (SessionRecord, TmuxPane, Wire.HostHello) and RexLoc live here so HeadroomCore can
 //    run Ownership.assign without depending on HeadroomClaude or HeadroomChrome.
 //  - ItemID has a stable string form (see ItemID.swift); ClosedRecord has an id and batchId.
 //  - ActionExecutor gained protections(_:) and recentlyClosed() for the CLI.
@@ -141,6 +141,14 @@ public protocol SysKit: Sendable {
     func systemMemory() -> SystemMemory
     /// pid exists and its start time still equals k.startSec.
     func isAlive(_ k: ProcKey) -> Bool
+    /// Parent pid of any live pid, including other users' processes that scan() leaves out (Rex's root-owned
+    /// `/usr/bin/login`). nil when gone or unreadable.
+    func parentPid(_ pid: Int32) -> Int32?
+}
+
+extension SysKit {
+    /// Fakes without hidden processes.
+    public func parentPid(_ pid: Int32) -> Int32? { nil }
 }
 
 // MARK: - Ownership (§3)
@@ -451,6 +459,40 @@ public struct TmuxLoc: Sendable, Hashable, Codable {
     public var label: String { "\(session):\(windowIndex).\(paneIndex)" }
 }
 
+/// Where a Claude session runs in Rex (the Rex counterpart of TmuxLoc). Ids are Rex's full ids ("session:<uuid>",
+/// "window:<uuid>", "block:<uuid>"); labels are display names and need not be unique.
+public struct RexLoc: Sendable, Hashable, Codable {
+    public let blockId: String
+    public let sessionId: String
+    /// "" when Rex's session list could not be read.
+    public let sessionLabel: String
+    /// nil when the block's place is unknown (discovery failed or timed out, or the block is in no window).
+    public let windowId: String?
+    public let windowLabel: String?
+    /// 1-based tab position (Rex's own numbering, as in `rex focus 2`).
+    public let windowIndex: Int?
+    /// 1-based position among the window's layers' blocks, back to front, layout order.
+    public let paneIndex: Int?
+    /// Drawn in the active tab of a session an app is attached to — or place unknown (fail-closed).
+    /// Rex has no "current session", so this over-approximates what is on screen.
+    public let visible: Bool
+    public init(blockId: String, sessionId: String, sessionLabel: String, windowId: String? = nil,
+                windowLabel: String? = nil, windowIndex: Int? = nil, paneIndex: Int? = nil, visible: Bool) {
+        self.blockId = blockId; self.sessionId = sessionId; self.sessionLabel = sessionLabel
+        self.windowId = windowId; self.windowLabel = windowLabel; self.windowIndex = windowIndex
+        self.paneIndex = paneIndex; self.visible = visible
+    }
+    public var placed: Bool { windowIndex != nil && paneIndex != nil }
+    /// sessionLabel, or "…" + last 6 characters of sessionId when the label is unknown.
+    public var sessionName: String { sessionLabel.isEmpty ? "…" + String(sessionId.suffix(6)) : sessionLabel }
+    /// "foundry:2.1"; "foundry:?" when not placed.
+    public var label: String {
+        if let w = windowIndex, let p = paneIndex { return "\(sessionName):\(w).\(p)" }
+        return "\(sessionName):?"
+    }
+    public var shortBlockId: String { String(blockId.suffix(6)) }
+}
+
 public struct LinkedUnit: Sendable, Hashable, Codable {
     public let root: ProcKey
     public let pgid: Int32
@@ -481,6 +523,8 @@ public struct ClaudeSession: Sendable, Hashable, Codable {
     public let cpuPercent: Double
     public let lastPrompt, lastAssistant, awaySummary: String?
     public let tmux: TmuxLoc?
+    /// Set only when the claude runs in Rex (never together with `tmux`).
+    public let rex: RexLoc?
     public let kind, version: String
     public let selfFootprint, selfRSS: Bytes
     /// ppid descendants (tool shells, MCP servers …).
@@ -492,7 +536,7 @@ public struct ClaudeSession: Sendable, Hashable, Codable {
                 busy: Bool = false, remoteControl: Bool = false, isLauncher: Bool = false, unregistered: Bool = false,
                 status: String = "idle", statusSince: Date? = nil, lastActivity: Date? = nil, startedAt: Date,
                 cpuPercent: Double = 0, lastPrompt: String? = nil, lastAssistant: String? = nil,
-                awaySummary: String? = nil, tmux: TmuxLoc? = nil, kind: String = "interactive",
+                awaySummary: String? = nil, tmux: TmuxLoc? = nil, rex: RexLoc? = nil, kind: String = "interactive",
                 version: String = "", selfFootprint: Bytes, selfRSS: Bytes = 0,
                 children: [LinkedUnit] = [], background: [LinkedUnit] = []) {
         self.key = key; self.sessionId = sessionId; self.cwd = cwd; self.title = title; self.project = project
@@ -501,7 +545,7 @@ public struct ClaudeSession: Sendable, Hashable, Codable {
         self.isLauncher = isLauncher; self.unregistered = unregistered; self.status = status
         self.statusSince = statusSince; self.lastActivity = lastActivity; self.startedAt = startedAt
         self.cpuPercent = cpuPercent; self.lastPrompt = lastPrompt; self.lastAssistant = lastAssistant
-        self.awaySummary = awaySummary; self.tmux = tmux; self.kind = kind; self.version = version
+        self.awaySummary = awaySummary; self.tmux = tmux; self.rex = rex; self.kind = kind; self.version = version
         self.selfFootprint = selfFootprint; self.selfRSS = selfRSS
         self.children = children; self.background = background
     }
@@ -522,6 +566,16 @@ public struct ClaudeSession: Sendable, Hashable, Codable {
     public var resumeCommand: String {
         "cd '\(cwd.replacingOccurrences(of: "'", with: "'\\''"))' && claude --resume \(sessionId)"
     }
+}
+
+extension ClaudeSession {
+    /// In tmux or Rex (Undo can reopen it there).
+    public var inMultiplexer: Bool { tmux != nil || rex != nil }
+    /// The planner's visiblePane rule: tmux visible or current, or Rex visible.
+    public var onScreen: Bool { (tmux.map { $0.visible || $0.current } ?? false) || (rex?.visible ?? false) }
+    /// "hub:3.1" (tmux), "rex foundry:2.1" (Rex), nil (neither).
+    public var placeLabel: String? { tmux?.label ?? rex.map { "rex " + $0.label } }
+    public static let notPlacedLabel = "not in tmux or Rex"
 }
 
 public struct LeftoverGroup: Sendable, Hashable, Codable {
@@ -682,15 +736,20 @@ public struct ClosedRecord: Codable, Sendable, Hashable {
     // Sessions / leftovers
     public var sessionId, cwd, tmuxSession: String?
     public var argv: [String]?
+    /// Sessions that ran in Rex: the Rex session's full id and its label (Undo reopens a tab there).
+    /// Absent in records written before Rex support (and for tmux sessions).
+    public var rexSessionId, rexSessionLabel: String?
     public init(id: String = UUID().uuidString, batchId: String, kind: String, itemId: String, closedAt: Date,
                 title: String, bytes: Bytes, source: String = "app", url: String? = nil, browserPid: Int32? = nil,
                 windowId: Int? = nil, index: Int? = nil, chromeSessionId: String? = nil, incognito: Bool? = nil,
-                sessionId: String? = nil, cwd: String? = nil, tmuxSession: String? = nil, argv: [String]? = nil) {
+                sessionId: String? = nil, cwd: String? = nil, tmuxSession: String? = nil, argv: [String]? = nil,
+                rexSessionId: String? = nil, rexSessionLabel: String? = nil) {
         self.id = id; self.batchId = batchId; self.kind = kind; self.itemId = itemId; self.closedAt = closedAt
         self.title = title; self.bytes = bytes; self.source = source; self.url = url; self.browserPid = browserPid
         self.windowId = windowId; self.index = index; self.chromeSessionId = chromeSessionId
         self.incognito = incognito; self.sessionId = sessionId; self.cwd = cwd
         self.tmuxSession = tmuxSession; self.argv = argv
+        self.rexSessionId = rexSessionId; self.rexSessionLabel = rexSessionLabel
     }
     /// Leftovers (and incognito tabs without helper access) cannot be restored.
     public var restorable: Bool { kind == "tab" ? (url != nil) : kind == "session" && sessionId != nil }
@@ -713,6 +772,12 @@ public protocol ActionExecutor: Sendable {
     func jump(_ id: ItemID) async
     /// Recently Closed store (closed.jsonl, newest first, last 7 days). Shared by App and CLI.
     func recentlyClosed() async -> [ClosedRecord]
+    /// Jump, then a note for the user when Jump could not finish the switch (nil = nothing to say).
+    func jumpNote(_ id: ItemID) async -> String?
+}
+
+extension ActionExecutor {
+    public func jumpNote(_ id: ItemID) async -> String? { await jump(id); return nil }
 }
 
 /// What both the App and the CLI get from `Headroom.live()` / `Headroom.mock()` (HeadroomActions).

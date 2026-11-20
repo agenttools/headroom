@@ -42,7 +42,7 @@ import Testing
     @Test func realisticRowCounts() {
         let w = MockWorld.snapshot(now: now)
         #expect((7...25).contains(w.chrome.tabs.count))
-        #expect(w.claude.sessions.count == 20)
+        #expect(w.claude.sessions.count == 23)                  // 20 in tmux or neither + 3 in Rex
         #expect(w.claude.leftovers.count == 3)
         let rows = w.chrome.tabs.count + w.claude.sessions.count + w.claude.leftovers.count
         #expect((35...45).contains(rows))
@@ -83,7 +83,28 @@ import Testing
     @Test func worldEncodes() throws {
         let data = try HeadroomJSON.encoder().encode(MockWorld.snapshot(now: now))
         let back = try HeadroomJSON.decoder().decode(WorldSnapshot.self, from: data)
-        #expect(back.claude.sessions.count == 20)
+        #expect(back.claude.sessions.count == 23)
+        #expect(back.claude.sessions.map(\.rex) == MockWorld.snapshot(now: now).claude.sessions.map(\.rex))
+    }
+
+    @Test func rexRows() {
+        let w = MockWorld.snapshot(now: now)
+        let inRex = w.claude.sessions.filter { $0.rex != nil }
+        #expect(inRex.map(\.title) == ["rex release notes", "rex docs pass", "rex billing spike"])
+        #expect(inRex.allSatisfy { $0.tmux == nil && $0.inMultiplexer && $0.rex!.placed })
+        #expect(inRex.filter(\.onScreen).map(\.title) == ["rex docs pass"])
+        #expect(w.claude.sessions.filter { !$0.inMultiplexer }.map(\.title) == ["newsletter draft"])
+        #expect(!w.claude.sessions.contains { $0.tmux != nil && $0.rex != nil })
+        let docs = inRex[1]
+        #expect(docs.itemID.stringValue == "session:43037:1790691540")
+        #expect(docs.rex?.label == "foundry:2.1" && docs.rex?.windowLabel == "api reference")
+        #expect(docs.placeLabel == "rex foundry:2.1")
+        #expect(inRex.map(\.itemID.stringValue)
+                == ["session:42940:1790693400", "session:43037:1790691540", "session:43134:1790694480"])
+        #expect(inRex[0].busy && !inRex[2].busy)
+        #expect(Set(inRex.map { $0.rex!.sessionId }).count == 2)       // foundry ×2, studio ×1
+        #expect(inRex[2].rex?.sessionId == "session:0190aaaa-0000-7000-8000-000000000002")
+        #expect(inRex[2].rex?.sessionLabel == "studio")
     }
 }
 
@@ -93,7 +114,7 @@ import Testing
         let w = MockWorld.snapshot(now: now)
         let launcher = w.claude.sessions.first(where: \.isLauncher)!
         let snap = ListSnapshot(world: w, protections: [launcher.itemID: .locked(.launcher)], dryRun: true, now: now)
-        #expect(snap.items.count == w.chrome.tabs.count + 23)
+        #expect(snap.items.count == w.chrome.tabs.count + 26)   // 23 sessions + 3 leftovers
         #expect(snap.items.first!.bytes! >= snap.items.last!.bytes ?? 0)
         let data = try HeadroomJSON.encoder().encode(snap)
         let obj = try JSONSerialization.jsonObject(with: data) as! [String: Any]
@@ -105,6 +126,22 @@ import Testing
         #expect(!items.contains { ($0["incognito"] as? Bool) == true && $0["url"] != nil })
         let tabsOnly = ListSnapshot(world: w, protections: [:], kind: .tabs, dryRun: true, now: now)
         #expect(tabsOnly.items.allSatisfy { $0.kind == "tab" })
+    }
+
+    @Test func listItemCarriesRexLocation() throws {
+        let now = Date(timeIntervalSince1970: 1_790_786_000)
+        let w = MockWorld.snapshot(now: now)
+        let snap = ListSnapshot(world: w, protections: [:], kind: .sessions, dryRun: true, now: now)
+        let docs = try #require(snap.items.first { $0.title == "rex docs pass" })
+        #expect(docs.rex == "foundry:2.1" && docs.tmux == nil)
+        let hub = try #require(snap.items.first { $0.title == "map directions" })
+        #expect(hub.tmux == "hub:5.0" && hub.rex == nil)
+        // `rex` is omitted (not null) when nil, so old consumers see the same keys for tmux rows.
+        let items = (try JSONSerialization.jsonObject(with: HeadroomJSON.encoder().encode(snap)) as! [String: Any])["items"]
+            as! [[String: Any]]
+        let docsJSON = items.first { $0["title"] as? String == "rex docs pass" }!
+        #expect(docsJSON["rex"] as? String == "foundry:2.1" && docsJSON["tmux"] == nil)
+        #expect(items.first { $0["title"] as? String == "map directions" }!.keys.contains("rex") == false)
     }
 
     @Test func suggestReport() throws {
@@ -125,6 +162,14 @@ import Testing
                              .closesAllWindows, .leftover, .manyItems, .launcher, .pidMismatch, .chromeCore, .childProcess]
         #expect(Set(all.map(\.code)).count == all.count)
     }
+
+    @Test func multiplexerReasonsKeepTheirCodes() {
+        // Codes are frozen (docs/cli.md); only the texts now name Rex too.
+        #expect(Reason.visiblePane.code == "visiblePane" && Reason.notInTmux.code == "notInTmux")
+        #expect(Reason.visiblePane.text == "visible or current tmux pane, or visible Rex pane")
+        #expect(Reason.notInTmux.text == "not in tmux or Rex (Undo cannot put it back where it ran)")
+        #expect(Reason.notInTmux.text.contains("not in tmux"))
+    }
 }
 
 @Suite struct EnvTests {
@@ -143,6 +188,111 @@ import Testing
         #expect(e.isClaudeBinary(path: "/tmp/s/fake/9.9.9"))
         #expect(!e.isClaudeBinary(path: "/bin/sleep"))
         #expect(e.launcherClaudePid == 123)
+    }
+
+    @Test func rexSeams() {
+        let d = HeadroomEnv(environment: ["HOME": "/nonexistent"])
+        #expect(d.rexBaseArgs == ["--autostart=false"])               // never start a server
+        #expect(d.rexServer == nil)
+        #expect(d.rexPath == "/nonexistent/.local/bin/rex")          // a test HOME never finds the real binary
+        let s = HeadroomEnv(environment: ["HOME": "/nonexistent", "HEADROOM_REX_SERVER": "unix:///tmp/hrx/s.sock"])
+        #expect(s.rexBaseArgs == ["--autostart=false", "-S", "unix:///tmp/hrx/s.sock"])
+        let p = HeadroomEnv(environment: ["HOME": "/nonexistent", "HEADROOM_REX": "/x/rex", "HEADROOM_REX_SERVER": ""])
+        #expect(p.rexPath == "/x/rex" && p.rexServer == nil)         // empty = unset, like every other seam
+        // The memberwise init resolves a nil rexPath the same way.
+        let m = HeadroomEnv(home: "/nonexistent", claudeDir: "/c", supportDir: "/s", tmuxPath: "/t", tmuxSocket: nil,
+                            dryRun: true, mock: false, claudeVersionsGlobs: [], launcherClaudePid: nil)
+        #expect(m.rexPath == "/nonexistent/.local/bin/rex" && m.rexServer == nil)
+    }
+
+    @Test func rexCandidatesOnlyUseApplicationsForTheAccountHome() {
+        let home = KnownPaths.accountHome
+        #expect(!home.isEmpty)
+        let c = KnownPaths.rexCandidates(home: home)
+        #expect(c.count == 3)
+        #expect(c[0] == home + "/.local/bin/rex")
+        #expect(c[1].hasPrefix("/Applications/Rex.app/") && c[2].hasPrefix("/Applications/Rex Beta.app/"))
+        #expect(c.allSatisfy { $0.hasSuffix("/rex") })
+        #expect(KnownPaths.rexCandidates(home: home + "/").count == 3)            // standardized
+        #expect(KnownPaths.rexCandidates(home: "/tmp/h") == ["/tmp/h/.local/bin/rex"])
+        #expect(KnownPaths.defaultRexPath(home: "/tmp/h") == "/tmp/h/.local/bin/rex")
+        #expect(KnownPaths.rexAppBundleId == "com.superlogical.rex")
+    }
+}
+
+@Suite struct RexContractTests {
+    let placed = RexLoc(blockId: "block:0190aaaa-0000-7000-8000-000000000315", sessionId: "session:0190aaaa-0000-7000-8000-000000000001",
+                        sessionLabel: "foundry", windowId: "window:0190aaaa-0000-7000-8000-000000000215",
+                        windowLabel: "api reference", windowIndex: 2, paneIndex: 1, visible: true)
+
+    @Test func labels() {
+        #expect(placed.label == "foundry:2.1" && placed.placed && placed.sessionName == "foundry")
+        #expect(placed.shortBlockId == "000315")
+        let unplaced = RexLoc(blockId: "block:x", sessionId: "session:0190aaaa-0000-7000-8000-000000abc123",
+                              sessionLabel: "foundry", visible: true)
+        #expect(unplaced.label == "foundry:?" && !unplaced.placed)
+        let nameless = RexLoc(blockId: "block:x", sessionId: "session:0190aaaa-0000-7000-8000-000000abc123",
+                              sessionLabel: "", windowIndex: 3, paneIndex: 2, visible: false)
+        #expect(nameless.sessionName == "…abc123" && nameless.label == "…abc123:3.2")
+        let halfPlaced = RexLoc(blockId: "block:x", sessionId: "session:s", sessionLabel: "a", windowIndex: 1, visible: false)
+        #expect(!halfPlaced.placed && halfPlaced.label == "a:?")
+    }
+
+    func session(tmux: TmuxLoc? = nil, rex: RexLoc? = nil) -> ClaudeSession {
+        ClaudeSession(key: ProcKey(pid: 10, startSec: 20), sessionId: "s", cwd: "/w", title: "t", project: "w",
+                      startedAt: Date(timeIntervalSince1970: 20), tmux: tmux, rex: rex, selfFootprint: 1)
+    }
+
+    @Test func helpers() {
+        let tmuxVisible = session(tmux: TmuxLoc(paneId: "%1", session: "hub", windowName: "w", windowIndex: 3,
+                                                paneIndex: 1, visible: true, current: false))
+        #expect(tmuxVisible.inMultiplexer && tmuxVisible.onScreen && tmuxVisible.placeLabel == "hub:3.1")
+        let tmuxCurrent = session(tmux: TmuxLoc(paneId: "%1", session: "hub", windowName: "w", windowIndex: 3,
+                                                paneIndex: 1, visible: false, current: true))
+        #expect(tmuxCurrent.onScreen)
+        let tmuxHidden = session(tmux: TmuxLoc(paneId: "%1", session: "hub", windowName: "w", windowIndex: 3, paneIndex: 1))
+        #expect(tmuxHidden.inMultiplexer && !tmuxHidden.onScreen)
+        let rexVisible = session(rex: placed)
+        #expect(rexVisible.inMultiplexer && rexVisible.onScreen && rexVisible.placeLabel == "rex foundry:2.1")
+        let rexHidden = session(rex: RexLoc(blockId: "block:x", sessionId: "session:s", sessionLabel: "studio",
+                                            windowId: "window:w", windowLabel: "x", windowIndex: 1, paneIndex: 2,
+                                            visible: false))
+        #expect(rexHidden.inMultiplexer && !rexHidden.onScreen && rexHidden.placeLabel == "rex studio:1.2")
+        let neither = session()
+        #expect(!neither.inMultiplexer && !neither.onScreen && neither.placeLabel == nil)
+        #expect(ClaudeSession.notPlacedLabel == "not in tmux or Rex")
+    }
+
+    @Test func sessionWithoutRexKeyStillDecodes() throws {
+        let s = session(rex: placed)
+        var obj = try JSONSerialization.jsonObject(with: JSONEncoder().encode(s)) as! [String: Any]
+        #expect(obj["rex"] != nil)
+        #expect((obj["rex"] as? [String: Any])?["label"] == nil)                  // computed, not encoded
+        #expect(try JSONDecoder().decode(ClaudeSession.self, from: JSONEncoder().encode(s)).rex == placed)
+        obj["rex"] = nil                                                           // as written before Rex support
+        let old = try JSONDecoder().decode(ClaudeSession.self, from: JSONSerialization.data(withJSONObject: obj))
+        #expect(old.rex == nil && old.sessionId == "s")
+        // nil optionals of an unplaced loc are omitted.
+        let unplaced = RexLoc(blockId: "block:x", sessionId: "session:s", sessionLabel: "", visible: true)
+        let u = try JSONSerialization.jsonObject(with: JSONEncoder().encode(unplaced)) as! [String: Any]
+        #expect(Set(u.keys) == ["blockId", "sessionId", "sessionLabel", "visible"])
+    }
+
+    @Test func closedRecordRexFields() throws {
+        // A closed.jsonl line written before Rex support.
+        let line = #"{"batchId":"b1","bytes":367001600,"closedAt":"2026-11-18T09:00:00Z","cwd":"/Users/t/work","id":"r1","itemId":"session:41000:1790690000","kind":"session","sessionId":"c5d50000-0000-4000-8000-000000001000","source":"cli","title":"map directions","tmuxSession":"hub"}"#
+        let old = try HeadroomJSON.decoder().decode(ClosedRecord.self, from: Data(line.utf8))
+        #expect(old.tmuxSession == "hub" && old.rexSessionId == nil && old.rexSessionLabel == nil && old.restorable)
+        let new = ClosedRecord(batchId: "b2", kind: "session", itemId: "session:43134:1790694480",
+                               closedAt: Date(timeIntervalSince1970: 1_790_700_000), title: "rex billing spike",
+                               bytes: 1, sessionId: "sid", cwd: "/w",
+                               rexSessionId: "session:0190aaaa-0000-7000-8000-000000000002", rexSessionLabel: "studio")
+        let data = try HeadroomJSON.encoder(pretty: false).encode(new)
+        let json = String(decoding: data, as: UTF8.self)
+        #expect(json.contains(#""rexSessionId":"session:0190aaaa-0000-7000-8000-000000000002""#))
+        #expect(json.contains(#""rexSessionLabel":"studio""#) && !json.contains("tmuxSession"))
+        let back = try HeadroomJSON.decoder().decode(ClosedRecord.self, from: data)
+        #expect(back == new && back.restorable)
     }
 }
 
