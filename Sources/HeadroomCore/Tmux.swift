@@ -1,6 +1,6 @@
 // tmux access (SPEC §5 tmux, §7.6 Jump, §7.7 session Undo).
 //
-// Every call is `<env.tmuxPath> <env.tmuxBaseArgs> …` through Shell.run (off the main thread, 2 s timeout), so
+// Every call is `<env.tmuxPath> -u <env.tmuxBaseArgs> …` through Shell.run (off the main thread, 2 s timeout), so
 // tests point it at a private server with HEADROOM_TMUX_SOCKET=headroom-test (`-L headroom-test`).
 // NEVER run kill/send-keys against the user's real tmux server in tests.
 //
@@ -18,19 +18,29 @@ public struct TmuxClient: Sendable {
     public static let paneFormat = "#{pane_id}\t#{pane_pid}\t#{pane_active}\t#{window_active}\t#{session_attached}\t#{session_name}\t#{window_index}\t#{pane_index}\t#{window_name}\t#{pane_title}\t#{pane_current_command}"
     public static let clientFormat = "#{client_activity}\t#{client_tty}\t#{client_session}"
 
+    /// `-u` on every call: without a UTF-8 locale the tmux client replaces every tab and non-ASCII character
+    /// in its output with "_". An app opened from Finder or the Dock has no LANG, so the tab-separated
+    /// `-F` formats below would not parse and every session would show as "not in tmux".
+    public static let clientArgs = ["-u"]
+
+    /// Test seam: variables added to the tmux child's environment (for example LC_ALL=C).
+    var extraEnvironment: [String: String] = [:]
+
     /// Runs tmux with the configured binary and socket. Missing binary or no server → a non-ok Result.
     public func run(_ args: [String]) async -> Shell.Result {
         guard FileManager.default.isExecutableFile(atPath: env.tmuxPath) else {
             return Shell.Result(status: 127, stdout: "", stderr: "tmux not found at \(env.tmuxPath)", timedOut: false)
         }
-        return await Shell.run(env.tmuxPath, env.tmuxBaseArgs + args, timeout: timeout, environment: childEnvironment)
+        return await Shell.run(env.tmuxPath, Self.clientArgs + env.tmuxBaseArgs + args, timeout: timeout,
+                               environment: childEnvironment)
     }
 
     /// With a private socket (tests), drop TMUX/TMUX_PANE so nothing can resolve to the caller's own tmux server.
     var childEnvironment: [String: String]? {
-        guard env.tmuxSocket != nil else { return nil }
+        guard env.tmuxSocket != nil || !extraEnvironment.isEmpty else { return nil }
         var e = ProcessInfo.processInfo.environment
-        e["TMUX"] = nil; e["TMUX_PANE"] = nil
+        if env.tmuxSocket != nil { e["TMUX"] = nil; e["TMUX_PANE"] = nil }
+        e.merge(extraEnvironment) { _, new in new }
         return e
     }
 

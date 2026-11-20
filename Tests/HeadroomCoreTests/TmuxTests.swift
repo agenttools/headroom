@@ -113,6 +113,15 @@ import HeadroomContracts
         }
         #expect(captured.contains("headroom-42 quoted \"x\""))
 
+        // No UTF-8 locale (an app opened from Finder has no LANG): tmux would turn the tabs of the -F format
+        // into "_" without `-u`, and no pane would parse.
+        var cLocale = tmux
+        cLocale.extraEnvironment = ["LC_ALL": "C", "LANG": "C", "LC_CTYPE": "C"]
+        #expect(cLocale.childEnvironment?["TMUX"] == nil)
+        let plain = await cLocale.panes().filter { $0.session == "hr-a" }
+        #expect(plain.count == 2)
+        #expect(Set(plain.map(\.windowName)) == ["first", "second win"])
+
         #expect(await tmux.clients().isEmpty)
         #expect(await tmux.jump(paneId: p2) == false)            // no client attached → false
         #expect(await tmux.jump(paneId: "%424242") == false)
