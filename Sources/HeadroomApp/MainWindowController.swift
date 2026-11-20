@@ -82,6 +82,12 @@ import HeadroomContracts
         tick = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.tickFired() }
         }
+        // Docker is read in the background (SPEC §5.2). It needs a cadence before the window is key, and the
+        // list is drawn again when a read finds a different set of containers (the first read above all).
+        applyCadence()
+        (ctx.world as? LiveWorld)?.docker?.setOnChange { [weak self] in
+            DispatchQueue.main.async { MainActor.assumeIsolated { self?.refresh() } }
+        }
         refresh()
     }
     required init?(coder: NSCoder) { fatalError() }

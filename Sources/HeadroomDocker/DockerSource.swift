@@ -51,6 +51,11 @@ public final class DockerSource: @unchecked Sendable {
     /// Containers every 5 s while the window is key, every 15 s while it is only visible.
     public func setCadence(windowKey: Bool) { lock.withLock { cadence = windowKey ? 5 : 15 } }
 
+    /// Called (on a background thread) after a background read that found another status or another set of
+    /// containers than the read before it. The app uses it to draw the list again without waiting for its tick.
+    public func setOnChange(_ f: (@Sendable () -> Void)?) { lock.withLock { onChange = f } }
+    private var onChange: (@Sendable () -> Void)?
+
     // MARK: Snapshot
 
     /// The last read, with the VM's footprint taken from `table`. Never waits for Docker.
@@ -107,15 +112,18 @@ public final class DockerSource: @unchecked Sendable {
         let ep = DockerEndpoint.resolve(environment: environment, home: env.home)
         let previous = lock.withLock { lastStats }
         let (snap, stats) = await Self.load(endpoint: ep, previous: previous, timeout: Self.callTimeout)
-        lock.withLock {
+        let changed: (@Sendable () -> Void)? = lock.withLock {
             var s = snap
             if let d = disk, diskSocket == ep?.socketPath { s.disk = d }
+            let differs = s.status != cached.status || s.containers.map(\.id) != cached.containers.map(\.id)
             cached = s
             endpoint = ep
             lastStats = stats
             lastRead = Date()
             reading = false
+            return differs ? onChange : nil
         }
+        changed?()
     }
 
     /// Pure but for the socket: what one endpoint says right now.

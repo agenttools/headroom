@@ -71,7 +71,7 @@ import HeadroomContracts
             bar.heightAnchor.constraint(equalToConstant: 16),
             legend.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
             legend.topAnchor.constraint(equalTo: bar.bottomAnchor, constant: 7),
-            legend.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -160),
+            legend.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -16),
             sep.leadingAnchor.constraint(equalTo: leadingAnchor), sep.trailingAnchor.constraint(equalTo: trailingAnchor),
             sep.bottomAnchor.constraint(equalTo: bottomAnchor),
         ])
@@ -142,6 +142,10 @@ import HeadroomContracts
             // Footprints include compressed (at full size) and swapped memory; see ⓘ.
             item(.systemOrange, "≠", "footprints exceed RAM in use by \(Self.gb(p.excess)) GB (compressed/swapped)")
         }
+        // One line: an attributed string without a paragraph style wraps, and the second line was cut off.
+        let oneLine = NSMutableParagraphStyle()
+        oneLine.lineBreakMode = .byTruncatingTail
+        lg.addAttribute(.paragraphStyle, value: oneLine, range: NSRange(location: 0, length: lg.length))
         legend.attributedStringValue = lg
     }
 

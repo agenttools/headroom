@@ -357,4 +357,26 @@ enum Replies {
         await elsewhere.refresh()
         #expect(elsewhere.snapshot(.empty).status == .running && elsewhere.snapshot(.empty).disk == nil)
     }
+
+    /// The app: with a cadence, a snapshot starts the read in the background and returns at once; the source
+    /// then reports the change, so the list is drawn again without waiting for the next tick.
+    @Test func backgroundReadReportsAChangeOnce() async throws {
+        let d = ShortDir()
+        defer { d.cleanup() }
+        let e = engine(d)
+        defer { e.stop() }
+        var env = HeadroomEnv(environment: ["HOME": d.path, "HEADROOM_SUPPORT_DIR": d.path + "/support"])
+        env.mock = false
+        let source = DockerSource(env: env, environment: ["HEADROOM_DOCKER_SOCKET": e.socketPath])
+        let (changes, signal) = AsyncStream<Void>.makeStream()
+        source.setOnChange { signal.yield() }
+        source.setCadence(windowKey: false)
+        #expect(source.snapshot(.empty).status == .notFound)        // did not wait
+        var it = changes.makeAsyncIterator()
+        await it.next()
+        #expect(source.snapshot(.empty).containers.count == 3)
+        // The same containers again: no second report.
+        source.setOnChange { Issue.record("reported a change with the same containers") }
+        await source.refresh()
+    }
 }

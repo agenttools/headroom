@@ -37,7 +37,12 @@ if arguments.contains("--dump-json") {
     let ctx = Headroom.context(env: env)
     let sem = DispatchSemaphore(value: 0)
     nonisolated(unsafe) var world = WorldSnapshot.empty
-    Task.detached { world = await ctx.world.snapshot(); sem.signal() }
+    Task.detached {
+        // One process, one snapshot: Docker is read first, because no background read would be seen (§5.2).
+        await (ctx.world as? LiveWorld)?.docker?.refresh()
+        world = await ctx.world.snapshot()
+        sem.signal()
+    }
     sem.wait()
     let data = try HeadroomJSON.encoder().encode(world)
     FileHandle.standardOutput.write(data)
