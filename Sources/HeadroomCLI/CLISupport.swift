@@ -21,8 +21,12 @@ struct CLIError: Error, Equatable {
 
 /// Where the CLI writes and reads. `standard` is the real terminal; tests use `CaptureIO`.
 class CLIIO: @unchecked Sendable {
-    func out(_ s: String) { FileHandle.standardOutput.write(Data((s + "\n").utf8)) }
-    func err(_ s: String) { FileHandle.standardError.write(Data((s + "\n").utf8)) }
+    /// A reader that went away (`headroom list | head`) ends the command quietly: SIGPIPE is ignored for the
+    /// sake of child processes (Shell), so the write fails instead, and the old `write(_:)` raised an exception.
+    func out(_ s: String) {
+        do { try FileHandle.standardOutput.write(contentsOf: Data((s + "\n").utf8)) } catch { exit(Exit.ok) }
+    }
+    func err(_ s: String) { try? FileHandle.standardError.write(contentsOf: Data((s + "\n").utf8)) }
     /// Writes without a newline (the y/N prompt).
     func prompt(_ s: String) { FileHandle.standardError.write(Data(s.utf8)) }
     func readLine() -> String? { Swift.readLine(strippingNewline: true) }
