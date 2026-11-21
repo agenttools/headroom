@@ -13,9 +13,9 @@ It is a native macOS Dock app (Swift 6, AppKit, SwiftPM), a `headroom` CLI that 
 Chrome helper extension for memory per tab. It is for people who keep many Claude Code sessions open, usually in
 tmux or Rex, next to a busy Chrome.
 
-**Status:** a personal tool, shared as it is. It runs on macOS on Apple Silicon only. You build it from source:
-there are no binary releases, and the app is not notarized (it is signed locally, ad-hoc or with a self-signed
-certificate that you make).
+**Status:** a personal tool, shared as it is. It runs on macOS on Apple Silicon only. You can install a
+[release](https://github.com/agenttools/headroom/releases), which is signed with a Developer ID and notarized by
+Apple, or build it from source (then it is signed locally, ad-hoc or with a self-signed certificate that you make).
 
 ![Headroom main window](docs/screenshots/main.png)
 
@@ -24,9 +24,11 @@ Wire protocol: [`docs/protocol.md`](docs/protocol.md). CLI: [`docs/cli.md`](docs
 
 ## Requirements
 
-- An Apple Silicon Mac with macOS 15 or later (`build.sh` builds for arm64 only).
-- A Swift 6.4 toolchain or later (`swift-tools-version: 6.4` in `Package.swift`), from Xcode or the Command Line Tools.
-  The build and the scripts also use `codesign`, `PlistBuddy`, `plutil`, `rsync` and `python3`, which macOS and the
+- An Apple Silicon Mac with macOS 15 or later (`build.sh` builds for arm64 only). Releases are built on macOS 27 and
+  have only been run there.
+- `python3` for `install.sh` (the Command Line Tools provide it; macOS offers to install them the first time you run it).
+- To build from source: a Swift 6.4 toolchain or later (`swift-tools-version: 6.4` in `Package.swift`), from Xcode or
+  the Command Line Tools. The build also uses `codesign`, `PlistBuddy`, `plutil` and `rsync`, which macOS and the
   Command Line Tools provide.
 - Google Chrome in `/Applications` for the Chrome section, and Claude Code (`~/.claude`) for the sessions.
 - Optional:
@@ -44,7 +46,18 @@ Wire protocol: [`docs/protocol.md`](docs/protocol.md). CLI: [`docs/cli.md`](docs
 Do these steps once, in this order. `install.sh` asks before each step. `make-signing-cert.sh` and `build.sh`
 run without asking. Every script prints what it did.
 
-1. **Make the signing certificate** (optional, but recommended):
+Get the app in one of two ways. With a release, do step A and go on at step 3. From source, do steps 1 and 2.
+
+**A. Download a release.** From the [latest release](https://github.com/agenttools/headroom/releases/latest),
+download `Headroom-<version>-macos-arm64.zip` and unzip it (double-click it, or `unzip`). The folder
+`Headroom-<version>` holds `Headroom.app` and the same `scripts/` as this repository, so the commands below work
+from that folder: in Terminal, `cd` into it. To check the download first, also download the `.sha256` file next to
+it and run `shasum -a 256 -c Headroom-<version>-macos-arm64.zip.sha256`.
+
+The release is signed with a Developer ID and notarized by Apple, so macOS opens it without a warning beyond the
+usual "downloaded from the internet" question.
+
+1. **Make the signing certificate** (from source only; optional, but recommended):
 
    ```sh
    scripts/make-signing-cert.sh
@@ -55,7 +68,7 @@ run without asking. Every script prints what it did.
    ad-hoc and macOS asks again after every rebuild. The first build after this may show a keychain
    prompt for `codesign`: choose **Always Allow**.
 
-2. **Build:**
+2. **Build** (from source only):
 
    ```sh
    scripts/build.sh            # -> build/Headroom.app (release, arm64, signed)
@@ -98,8 +111,11 @@ run without asking. Every script prints what it did.
    Rex needs no Automation. To let Jump switch Rex to another session, turn on **Remote Control** in Rex (it is off
    by default).
 
-After an update, run `scripts/build.sh && scripts/install.sh` again. Then click the reload icon on the
-helper in `chrome://extensions` if the extension changed.
+To update: quit Headroom, then download the new release and run its `scripts/install.sh`, or from source run
+`scripts/build.sh && scripts/install.sh`. Then click the reload icon on the helper in `chrome://extensions` if the
+extension changed. Releases are all signed with the same Developer ID, so macOS keeps your Automation grants across
+them. A release and a build of your own have different signatures: after you switch from one to the other, macOS
+asks for the Chrome and Ghostty permissions again.
 
 ### What works without any of this
 
@@ -258,15 +274,23 @@ scripts/uninstall.sh --restore-dock   # puts back the whole Dock from the newest
 scripts/uninstall.sh --purge          # also deletes ~/Library/Application Support/Headroom (logs, backups)
 ```
 
+Run it from the repository or from the release folder you downloaded: the script is the same.
 It removes only things that are clearly Headroom's. Remove the helper yourself at `chrome://extensions`.
-To forget the signing identity: open Keychain Access, find "Headroom Local Signing" and delete it.
+To forget the signing identity (if you built from source): open Keychain Access, find "Headroom Local Signing" and
+delete it.
 
 ## Troubleshooting
 
 - **Chrome says "Specified native messaging host not found"**: run `scripts/install.sh` again, or just
   open Headroom: at launch it repairs an existing bridge file whose path or id is wrong (not in dry run).
   A missing bridge file is written by `scripts/install.sh`.
+- **macOS says Headroom "cannot be opened" or "is damaged"** (a downloaded copy): the copy is not notarized. This
+  happens with an archive that someone made with `scripts/package.sh --self-signed`, not with the releases on GitHub.
+  Run `scripts/install.sh` from the downloaded folder: it offers to remove the download (quarantine) mark from the
+  installed copy. By hand: `xattr -dr com.apple.quarantine ~/Applications/Headroom.app`.
 - **macOS asks for Automation after every build**: the build is ad-hoc signed. Run `scripts/make-signing-cert.sh`.
+- **macOS asks for Automation again after an update**: you changed between a release and a build of your own. Their
+  signatures differ, so macOS treats them as two apps. Allow it again.
 - **Two "Headroom Local Signing" identities**: `build.sh` uses the first one. Pin one with
   `SIGN_ID=<sha1> scripts/build.sh` (`security find-identity -p codesigning` lists them).
 - **Headroom's own cost**: the footer shows the app, the host and the helper extension's memory.
@@ -309,7 +333,9 @@ captured tmux output, and hand-written `rex … --json` output in `rex-*.json`),
 
 | Script | What it does |
 |---|---|
-| `scripts/build.sh [--run\|--mock]` | Release build, then assembles and signs `build/Headroom.app`. Env: `SIGN_ID`, `SIGN_KEYCHAIN`, `SCRATCH` (SwiftPM scratch path), `OUT`, `BIN_DIR` (package prebuilt binaries) |
+| `scripts/build.sh [--run\|--mock\|--release]` | Release build, then assembles and signs `build/Headroom.app`. `--release` signs for distribution (see [Make a release](#make-a-release)). Env: `SIGN_ID`, `SIGN_KEYCHAIN`, `SCRATCH` (SwiftPM scratch path), `OUT`, `BIN_DIR` (package prebuilt binaries) |
+| `scripts/package.sh [--self-signed] [--allow-dirty]` | Builds, notarizes and zips the release archive into `dist/`. It publishes nothing. Env: `NOTARY_PROFILE` |
+| `scripts/release.entitlements` | The one entitlement of a `--release` build: Apple events (Automation) under the hardened runtime |
 | `scripts/mkicon.swift <out.icns>` | Draws the gauge icon; `--png <px> <out.png>` for one PNG (for example extension icons) |
 | `scripts/extension-id.sh [manifest]` | Prints the extension id from the manifest's `key` |
 | `scripts/make-signing-cert.sh [--keychain <kc>]` | Creates the signing identity (run it once; `--keychain <kc>` writes to a scratch keychain instead of the login keychain) |
@@ -320,7 +346,40 @@ captured tmux output, and hand-written `rex … --json` output in `rex-*.json`),
 
 Bundle layout: `Contents/MacOS/Headroom`, `Contents/Helpers/{headroom-host,headroom}`,
 `Contents/Resources/{AppIcon.icns,ChromeExtension/}`, and `Info.plist` with `HeadroomExtensionID`.
-The helpers are signed first (identifiers `dev.adder.headroom.host` and `.cli`), then the app. There is no hardened runtime and no sandbox.
+The helpers are signed first (identifiers `dev.adder.headroom.host` and `.cli`), then the app. There is no sandbox.
+A local build has no hardened runtime. A `--release` build has the hardened runtime and a secure timestamp.
+
+### Make a release
+
+Do this once per Mac:
+
+1. Put a "Developer ID Application" certificate in your keychain: Xcode ▸ Settings ▸ Accounts ▸ your team ▸
+   Manage Certificates ▸ **+** ▸ Developer ID Application. This needs a paid Apple Developer account.
+2. Store credentials for Apple's notary service in your keychain, as the profile `headroom-notary`:
+
+   ```sh
+   xcrun notarytool store-credentials headroom-notary --apple-id <your Apple ID> --team-id <TEAMID>
+   ```
+
+   It asks for an app-specific password, which you make at appleid.apple.com ▸ Sign-In and Security.
+
+Then, for each release:
+
+1. Set the version in `Sources/HeadroomContracts/Env.swift` (`HeadroomEnv.version`), and commit. `package.sh`
+   refuses a tree with uncommitted changes to tracked files.
+2. Run `scripts/package.sh`. It runs `build.sh --release`, sends the app to Apple's notary service, staples the
+   ticket to the app, checks that Gatekeeper accepts it, and writes `dist/Headroom-<version>-macos-arm64.zip` with
+   its `.sha256`. The archive holds `Headroom.app`, the install and uninstall scripts, `INSTALL.txt` and `LICENSE`.
+3. Tag the commit `v<version>`, push the tag, and attach both files in `dist/` to a GitHub release:
+
+   ```sh
+   git tag v<version> && git push origin v<version>
+   gh release create v<version> dist/Headroom-<version>-macos-arm64.zip dist/Headroom-<version>-macos-arm64.zip.sha256
+   ```
+
+`scripts/package.sh --self-signed` makes the same archive from a local build, without a Developer ID and without
+notarization. macOS refuses to open a downloaded copy of it until the quarantine mark is removed (`install.sh`
+offers to do that), so use it only to try the packaging.
 
 ### Build and test
 

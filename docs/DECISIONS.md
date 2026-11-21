@@ -1,6 +1,6 @@
 # Design decisions
 
-These decisions were made on 2026-09-30 (item 6 on 2026-11-19, item 7 on 2026-11-20, item 8 on 2026-11-21), after [SPEC.md](SPEC.md) was written. Where they differ from SPEC.md, they override it.
+These decisions were made on 2026-09-30 (item 6 on 2026-11-19, item 7 on 2026-11-20, items 8 and 9 on 2026-11-21), after [SPEC.md](SPEC.md) was written. Where they differ from SPEC.md, they override it.
 
 1. **Chrome:** helper extension + native-messaging host for per-tab memory, with the JXA/AppleScript fallback (SPEC §4 as written).
 2. **Close flow:** undo-first. Close at once and show an Undo toast. Show the confirm sheet only for the risky triggers in SPEC §7.
@@ -10,6 +10,7 @@ These decisions were made on 2026-09-30 (item 6 on 2026-11-19, item 7 on 2026-11
 6. **Rex support** (decided 2026-11-19): sessions that run in Rex get the same depth as sessions in tmux (location, visibility, Peek, Jump, Undo), and tmux behaviour is unchanged. See below and SPEC §5.1.
 7. **Docker insight** (decided 2026-11-20): Headroom shows Docker's memory and disk use, read-only. See below and SPEC §5.2.
 8. **tmux Jump finds the Ghostty window by tty** (decided 2026-11-21): see below and SPEC §7.6.
+9. **Releases** (decided 2026-11-21): a downloadable archive, signed with a Developer ID and notarized. `build.sh --release` adds the hardened runtime, which SPEC §8.2 excludes for local builds. See below.
 
 ## tmux Jump: the Ghostty window is found by tty
 
@@ -108,3 +109,22 @@ Rex is a terminal multiplexer: a session holds windows (tabs), and a window hold
   The rules for Docker Desktop and OrbStack come from their process names and were not run against those apps.
 - **Not done:** stopping or restarting containers, pruning, remote engines (`tcp://`, `ssh://`), and more than one
   engine at a time.
+
+## Releases
+
+- **Two ways to sign.** A local build is unchanged: "Headroom Local Signing" or ad-hoc, no hardened runtime, no
+  timestamp (item 4, SPEC §8.2). `build.sh --release` signs with a "Developer ID Application" identity, the
+  hardened runtime and a secure timestamp, because Apple's notary service accepts nothing less.
+- **One entitlement.** Under the hardened runtime, the app and the CLI get `com.apple.security.automation.apple-events`
+  (`scripts/release.entitlements`), so that macOS can ask about Chrome and Ghostty. The host sends no Apple events
+  and gets none. There is still no sandbox.
+- **A zip with the installer, not a bare app.** Headroom needs more than the bundle: the extension folder, the
+  Chrome bridge file and the CLI link. The archive holds `Headroom.app` next to the same `install.sh` and
+  `uninstall.sh` as the repository, and `install.sh` finds the app there. One procedure serves both ways to get the app.
+  - Rejected: a `.dmg` to drag into `/Applications` (the app repairs the bridge file only when it runs from
+    `~/Applications/Headroom.app`, and nothing would link the CLI), and a `.pkg` (it installs as root for all users;
+    everything Headroom writes is under `$HOME`).
+- **`package.sh` never publishes.** It builds, notarizes, staples, zips and checks the archive. The tag and the
+  GitHub release are made by hand, so a release is always a decision.
+- **A release and a local build are two apps to macOS.** Their designated requirements differ, so the Automation
+  grants do not carry over. All releases share one Developer ID, so grants carry over from release to release.

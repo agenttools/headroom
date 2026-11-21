@@ -4,10 +4,13 @@
 #   scripts/install.sh                 install (asks before each step)
 #   scripts/install.sh --dock          ...and add Headroom to the Dock (backs up the Dock first)
 #   scripts/install.sh --yes           answer yes to every question (needed without a terminal)
-#   scripts/install.sh --app <path>    install another bundle (default: build/Headroom.app)
+#   scripts/install.sh --app <path>    install another bundle (default: build/Headroom.app, or the Headroom.app
+#                                      next to scripts/ in a release package)
 #
 # What it does, everything under $HOME:
-#   1. ~/Applications/Headroom.app                          copy of the built app (ditto; old copy replaced)
+#   1. ~/Applications/Headroom.app                          copy of the built app (ditto; old copy replaced).
+#      If the copy carries macOS's quarantine mark (a download) and Gatekeeper would refuse the app (it is not
+#      notarized), it offers to remove the mark from the installed copy.
 #   2. ~/Library/Application Support/Headroom/ChromeExtension/   stable folder for chrome://extensions ▸ Load unpacked
 #   3. ~/Library/Application Support/Google/Chrome/NativeMessagingHosts/dev.adder.headroom.json
 #   4. ~/bin/headroom  ->  ~/Applications/Headroom.app/Contents/Helpers/headroom   (the CLI)
@@ -22,20 +25,22 @@ set -euo pipefail
 source "$(dirname "$0")/_common.sh"
 
 DOCK=0
+# A source checkout builds the app into build/. A release package (scripts/package.sh) has it next to scripts/.
 APP_SRC="$REPO_DIR/build/Headroom.app"
+[[ -d "$APP_SRC" || ! -d "$REPO_DIR/Headroom.app" ]] || APP_SRC="$REPO_DIR/Headroom.app"
 # shellcheck disable=SC2034  # ASSUME_YES is read by ask() in _common.sh
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --dock) DOCK=1; shift ;;
     --yes|-y) ASSUME_YES=1; shift ;;
     --app) APP_SRC="${2:?--app needs a path}"; shift 2 ;;
-    -h|--help) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) die "unknown option: $1 (see --help)" ;;
   esac
 done
 
 # --- Checks before touching anything ------------------------------------------------------------
-[[ -d "$APP_SRC" ]] || die "no app at $APP_SRC. Build it first: scripts/build.sh"
+[[ -d "$APP_SRC" ]] || die "no app at $APP_SRC. Build it first (scripts/build.sh), or name one with --app <path>"
 APP_SRC="$(cd "$APP_SRC" && pwd -P)"
 [[ -x "$APP_SRC/Contents/MacOS/Headroom" ]] || die "$APP_SRC is not a Headroom build (no Contents/MacOS/Headroom)"
 [[ -x "$APP_SRC/Contents/Helpers/headroom-host" ]] || die "$APP_SRC has no Contents/Helpers/headroom-host"
@@ -75,6 +80,20 @@ if ask "Copy Headroom.app$( [[ -e "$INSTALL_APP" ]] && printf ' (replaces the in
   mv "$NEW" "$INSTALL_APP"
   codesign --verify --deep --strict "$INSTALL_APP" || die "the installed copy fails codesign --verify"
   say "  installed $(tilde "$INSTALL_APP")"
+  # A copy that came through a browser carries macOS's quarantine mark, and ditto copies the mark. A notarized
+  # build opens anyway (spctl accepts it). One that is not notarized is refused: the app, the CLI and the Chrome
+  # helper would not start. Only then is the mark a problem, and only the installed copy is changed.
+  if xattr -p com.apple.quarantine "$INSTALL_APP" >/dev/null 2>&1 \
+     && ! spctl --assess --type execute "$INSTALL_APP" >/dev/null 2>&1; then
+    say "  macOS marked this copy as downloaded (quarantine), and this build is not notarized by Apple."
+    say "  With the mark, macOS refuses to open the app, the headroom command and the Chrome helper."
+    if ask "Remove the quarantine mark from $(tilde "$INSTALL_APP") (this app only)?"; then
+      xattr -dr com.apple.quarantine "$INSTALL_APP"
+      say "  removed"
+    else
+      say "  kept. Later: xattr -dr com.apple.quarantine \"$INSTALL_APP\""
+    fi
+  fi
 else
   say "  skipped"
 fi

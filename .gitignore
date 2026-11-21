@@ -14,3 +14,4 @@ xcuserdata/
 *.keychain
 *.keychain-db
 __pycache__/
+dist/

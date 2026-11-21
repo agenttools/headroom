@@ -4,6 +4,9 @@
 #   scripts/build.sh            release build -> build/Headroom.app
 #   scripts/build.sh --run      ...then open it (passes HEADROOM_DRY_RUN through if you set it)
 #   scripts/build.sh --mock     ...then open it with the fixture world: HEADROOM_MOCK=1 HEADROOM_DRY_RUN=1
+#   scripts/build.sh --release  sign for distribution: a "Developer ID Application" identity, the hardened
+#                               runtime, a secure timestamp and scripts/release.entitlements. This is what Apple's
+#                               notary service accepts (scripts/package.sh submits it). It needs the network.
 #
 # Bundle layout:
 #   Contents/MacOS/Headroom                 the app (SwiftPM product HeadroomApp)
@@ -15,6 +18,7 @@
 #
 # Environment:
 #   SIGN_ID        identity name or SHA-1. Default: "Headroom Local Signing" if the keychain has it, else ad-hoc.
+#                  With --release the default is the first valid "Developer ID Application" identity.
 #   SIGN_KEYCHAIN  keychain to search for the identity (default: the normal search list).
 #   SCRATCH        SwiftPM scratch path (default .build/bundle).
 #   OUT            output folder (default build).
@@ -23,15 +27,31 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$PWD"
 
-RUN=0; MOCK=0
+RUN=0; MOCK=0; RELEASE=0
 for a in "$@"; do
   case "$a" in
     --run) RUN=1 ;;
     --mock) MOCK=1 ;;
-    -h|--help) sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --release) RELEASE=1 ;;
+    -h|--help) sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $a" >&2; exit 1 ;;
   esac
 done
+
+# --release: find the identity before compiling, so a missing certificate fails at once.
+KC=()
+[[ -n "${SIGN_KEYCHAIN:-}" ]] && KC=(--keychain "$SIGN_KEYCHAIN")
+SIGN="${SIGN_ID:-}"
+if [[ $RELEASE == 1 && -z "$SIGN" ]]; then
+  SIGN="$(security find-identity -v -p codesigning ${SIGN_KEYCHAIN:+"$SIGN_KEYCHAIN"} 2>/dev/null \
+          | awk '/"Developer ID Application: / { print $2; exit }')"
+  if [[ -z "$SIGN" ]]; then
+    echo "error: --release needs a \"Developer ID Application\" certificate in your keychain." >&2
+    echo "       Make one in Xcode ▸ Settings ▸ Accounts ▸ your team ▸ Manage Certificates ▸ + ▸ Developer ID Application," >&2
+    echo "       or name another identity with SIGN_ID=<name or SHA-1>." >&2
+    exit 1
+  fi
+fi
 
 SCRATCH="${SCRATCH:-.build/bundle}"
 OUT="${OUT:-build}"
@@ -102,10 +122,17 @@ if [[ -n "$EXT_ID" ]]; then
 fi
 plutil -lint -s "$PL"
 
-# 5. Sign: helpers first, then the app. No hardened runtime, no sandbox, no timestamp.
-KC=()
-[[ -n "${SIGN_KEYCHAIN:-}" ]] && KC=(--keychain "$SIGN_KEYCHAIN")
-SIGN="${SIGN_ID:-}"
+# 5. Sign: helpers first, then the app. There is no sandbox. A local build has no hardened runtime and no timestamp.
+#    --release adds both, and scripts/release.entitlements: the one entitlement (automation.apple-events) that the
+#    app and the CLI need under the hardened runtime to ask about Automation and to control Chrome and Ghostty.
+#    The host sends no Apple events, so it gets none. (The entitlements file has no comments: codesign's parser
+#    rejects them.)
+SIGN_OPTS=(--timestamp=none)
+ENTITLED=()
+if [[ $RELEASE == 1 ]]; then
+  SIGN_OPTS=(--options runtime --timestamp)
+  ENTITLED=(--entitlements "$ROOT/scripts/release.entitlements")
+fi
 if [[ -z "$SIGN" ]]; then
   # No -v: a self-signed certificate is "not trusted" as a root, but codesign signs with it fine.
   # Use the SHA-1 so that two identities with the same name cannot make codesign fail as ambiguous.
@@ -117,16 +144,16 @@ if [[ -z "$SIGN" ]]; then
   fi
 fi
 sign() { # hides codesign's "replacing existing signature" note (the linker ad-hoc signs every binary)
-  codesign --force --sign "$SIGN" ${KC[@]+"${KC[@]}"} --timestamp=none "$@" 2>&1 | { grep -v 'replacing existing signature' || true; } >&2
+  codesign --force --sign "$SIGN" ${KC[@]+"${KC[@]}"} "${SIGN_OPTS[@]}" "$@" 2>&1 | { grep -v 'replacing existing signature' || true; } >&2
   return "${PIPESTATUS[0]}"
 }
 sign --identifier dev.adder.headroom.host "$APP/Contents/Helpers/headroom-host"
-sign --identifier dev.adder.headroom.cli "$APP/Contents/Helpers/headroom"
-sign "$APP"
+sign --identifier dev.adder.headroom.cli ${ENTITLED[@]+"${ENTITLED[@]}"} "$APP/Contents/Helpers/headroom"
+sign ${ENTITLED[@]+"${ENTITLED[@]}"} "$APP"
 codesign --verify --deep --strict "$APP"
 
 echo "built $APP"
-echo "  signed with:  $([[ "$SIGN" == "-" ]] && echo ad-hoc || echo "$SIGN")"
+echo "  signed with:  $([[ "$SIGN" == "-" ]] && echo ad-hoc || echo "$SIGN")$([[ $RELEASE == 1 ]] && echo "  (release: hardened runtime, timestamp)")"
 echo "  requirement:  $(codesign -d -r- "$APP" 2>&1 | sed -n 's/^#* *designated => //p')"
 echo "  extension id: ${EXT_ID:-none}"
 
