@@ -13,9 +13,10 @@ It is a native macOS Dock app (Swift 6, AppKit, SwiftPM), a `headroom` CLI that 
 Chrome helper extension for memory per tab. It is for people who keep many Claude Code sessions open, usually in
 tmux or Rex, next to a busy Chrome.
 
-**Status:** a personal tool, shared as it is. It runs on macOS on Apple Silicon only. You can install a
-[release](https://github.com/agenttools/headroom/releases), which is signed with a Developer ID and notarized by
-Apple, or build it from source (then it is signed locally, ad-hoc or with a self-signed certificate that you make).
+**Status:** a personal tool, shared as it is. It runs on macOS on Apple Silicon only. You can
+[download it from adder.dev](https://adder.dev/headroom) (the newest
+[release](https://github.com/agenttools/headroom/releases), signed with a Developer ID and notarized by Apple), or
+build it from source (then it is signed locally, ad-hoc or with a self-signed certificate that you make).
 
 ![Headroom main window](docs/screenshots/main.png)
 
@@ -48,8 +49,10 @@ run without asking. Every script prints what it did.
 
 Get the app in one of two ways. With a release, do step A and go on at step 3. From source, do steps 1 and 2.
 
-**A. Download a release.** From the [latest release](https://github.com/agenttools/headroom/releases/latest),
-download `Headroom-<version>-macos-arm64.zip` and unzip it (double-click it, or `unzip`). The folder
+**A. Download a release.** Use the Download button on [adder.dev/headroom](https://adder.dev/headroom), or from the
+[latest release](https://github.com/agenttools/headroom/releases/latest) download
+`Headroom-<version>-macos-arm64.zip` (the button gives the same file as `Headroom-macos-arm64.zip`). Unzip it
+(double-click it, or `unzip`). The folder
 `Headroom-<version>` holds `Headroom.app` and the same `scripts/` as this repository, so the commands below work
 from that folder: in Terminal, `cd` into it. To check the download first, also download the `.sha256` file next to
 it and run `shasum -a 256 -c Headroom-<version>-macos-arm64.zip.sha256`.
