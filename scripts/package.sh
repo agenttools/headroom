@@ -8,6 +8,9 @@
 # Output:
 #   dist/Headroom-<version>-macos-arm64.zip           the archive
 #   dist/Headroom-<version>-macos-arm64.zip.sha256    its checksum, in `shasum -a 256 -c` form
+#   dist/Headroom-macos-arm64.zip                     the same archive under a name without the version. Attached to
+#                                                     every release, it gives one link that always serves the newest:
+#                                                     github.com/agenttools/headroom/releases/latest/download/Headroom-macos-arm64.zip
 #
 # The archive holds one folder, Headroom-<version>/:
 #   Headroom.app      the signed app (with the notarization ticket stapled, unless --self-signed)
@@ -38,7 +41,7 @@ for a in "$@"; do
   case "$a" in
     --self-signed) NOTARIZE=0 ;;
     --allow-dirty) ALLOW_DIRTY=1 ;;
-    -h|--help) sed -n '2,31p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,34p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $a" >&2; exit 1 ;;
   esac
 done
@@ -63,6 +66,7 @@ fi
 
 NAME="Headroom-$VERSION"
 ARCHIVE="$ROOT/dist/$NAME-macos-arm64.zip"
+STABLE="$ROOT/dist/Headroom-macos-arm64.zip"
 APP="$ROOT/build/Headroom.app"
 WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
 
@@ -127,7 +131,7 @@ EOF
 
 # --- 4. Archive, then check the archive itself ----------------------------------------------------
 mkdir -p "$ROOT/dist"
-rm -f "$ARCHIVE" "$ARCHIVE.sha256"
+rm -f "$ARCHIVE" "$ARCHIVE.sha256" "$STABLE"
 # No extended attributes or resource forks: nothing in the folder needs them (the notarization ticket is a file
 # inside the app), and without them `unzip` gives the same folder as Finder, with no "._" files.
 ditto -c -k --norsrc --noextattr --noacl --keepParent "$STAGE" "$ARCHIVE"
@@ -139,11 +143,13 @@ for f in install.sh uninstall.sh dock-tile.py extension-id.sh; do
   [[ -x "$CHECK/scripts/$f" ]] || die "scripts/$f in the archive is not executable"
 done
 (cd "$ROOT/dist" && shasum -a 256 "$(basename "$ARCHIVE")" >"$(basename "$ARCHIVE").sha256")
+cp -p "$ARCHIVE" "$STABLE"
 
 echo
 echo "packaged $ARCHIVE"
+echo "  and as:   $STABLE (the same file)"
 echo "  version:  $VERSION (commit $COMMIT$DIRTY)"
 echo "  build:    $KIND"
 echo "  size:     $(du -h "$ARCHIVE" | awk '{print $1}')"
 echo "  sha256:   $(awk '{print $1}' "$ARCHIVE.sha256")"
-echo "Nothing was published. To release: tag v$VERSION, push the tag, then attach both files in dist/ to the GitHub release."
+echo "Nothing was published. To release: tag v$VERSION, push the tag, then attach the three files in dist/ to the GitHub release."

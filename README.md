@@ -369,13 +369,17 @@ Then, for each release:
    refuses a tree with uncommitted changes to tracked files.
 2. Run `scripts/package.sh`. It runs `build.sh --release`, sends the app to Apple's notary service, staples the
    ticket to the app, checks that Gatekeeper accepts it, and writes `dist/Headroom-<version>-macos-arm64.zip` with
-   its `.sha256`. The archive holds `Headroom.app`, the install and uninstall scripts, `INSTALL.txt` and `LICENSE`.
-3. Tag the commit `v<version>`, push the tag, and attach both files in `dist/` to a GitHub release:
+   its `.sha256`, and a copy named `Headroom-macos-arm64.zip`. The archive holds `Headroom.app`, the install and uninstall scripts, `INSTALL.txt` and `LICENSE`.
+3. Tag the commit `v<version>`, push the tag, and attach the three files in `dist/` to a GitHub release:
 
    ```sh
    git tag v<version> && git push origin v<version>
-   gh release create v<version> dist/Headroom-<version>-macos-arm64.zip dist/Headroom-<version>-macos-arm64.zip.sha256
+   gh release create v<version> dist/Headroom-<version>-macos-arm64.zip dist/Headroom-<version>-macos-arm64.zip.sha256 dist/Headroom-macos-arm64.zip
    ```
+
+   `Headroom-macos-arm64.zip` is the same archive under a name without the version. Because every release has it,
+   `https://github.com/agenttools/headroom/releases/latest/download/Headroom-macos-arm64.zip` always serves the newest
+   release. Links from other sites point there, so they need no change when a release is made.
 
 `scripts/package.sh --self-signed` makes the same archive from a local build, without a Developer ID and without
 notarization. macOS refuses to open a downloaded copy of it until the quarantine mark is removed (`install.sh`
