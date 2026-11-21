@@ -16,13 +16,13 @@ import HeadroomChrome
 import HeadroomDocker
 
 public enum Headroom {
-    /// Live or mock, chosen by HEADROOM_MOCK.
-    public static func context(env: HeadroomEnv = .current) -> HeadroomContext {
-        env.mock ? mock(env: env) : live(env: env)
+    /// Live or mock, chosen by HEADROOM_MOCK. `mayAskForGhostty`: see LiveServices.init (only the app's window sets it).
+    public static func context(env: HeadroomEnv = .current, mayAskForGhostty: Bool = false) -> HeadroomContext {
+        env.mock ? mock(env: env) : live(env: env, mayAskForGhostty: mayAskForGhostty)
     }
 
-    public static func live(env: HeadroomEnv = .current) -> HeadroomContext {
-        let s = LiveServices(env: env)
+    public static func live(env: HeadroomEnv = .current, mayAskForGhostty: Bool = false) -> HeadroomContext {
+        let s = LiveServices(env: env, mayAskForGhostty: mayAskForGhostty)
         return HeadroomContext(world: s.world, executor: s.executor, env: env, isMock: false)
     }
 
@@ -51,12 +51,14 @@ public final class LiveServices: Sendable {
     public let world: LiveWorld
     public let executor: LiveExecutor
 
-    public init(env: HeadroomEnv = .current) {
+    /// `mayAskForGhostty`: Jump may show the macOS prompt for Automation ▸ Ghostty, once, the first time it needs the
+    /// permission (SPEC §8.5). Only the app's window sets it. The CLI and the app's one-shot modes never prompt.
+    public init(env: HeadroomEnv = .current, mayAskForGhostty: Bool = false) {
         self.env = env
         sys = LiveSysKit(env: env)
         tmux = TmuxClient(env: env)
         rex = RexClient(env: env)
-        claude = ClaudeSource(env: env, tmux: tmux, rex: rex)
+        claude = ClaudeSource(env: env, tmux: tmux, rex: rex, desktop: GhosttyDesktop(mayAsk: mayAskForGhostty))
         chrome = ChromeSource(env: env)
         docker = DockerSource(env: env)
         world = LiveWorld(env: env, sys: sys, tmux: tmux, claude: claude, chrome: chrome, docker: docker)

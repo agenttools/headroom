@@ -113,8 +113,9 @@ public final class LiveExecutor: ActionExecutor, PeekProvider, @unchecked Sendab
         }
     }
 
-    /// Jump, plus the note a Rex jump returns when it could not finish the switch (no pane found, or the app refused
-    /// `session.select`, e.g. Remote Control is off). tmux and tabs never have a note.
+    /// Jump, plus the note a session jump returns when it could not finish the switch. Rex: no pane found, or the app
+    /// refused `session.select` (e.g. Remote Control is off). tmux: the session's Ghostty window could not be brought
+    /// forward, tmux refused, or no client is attached. Tabs never have a note.
     public func jumpNote(_ id: ItemID) async -> String? {
         if case .session(let k) = id { return await claude.jumpNote(k) }
         await jump(id)

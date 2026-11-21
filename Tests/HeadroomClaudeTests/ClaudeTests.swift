@@ -485,47 +485,173 @@ import HeadroomCore
         #expect(desk.calls.last == "focus:")
     }
 
-    /// Jump resolves the pane live from the ppid chain (no prior snapshot), then: no client → attach command;
-    /// with a client (a pty client started by `script`) → switch-client to the pane, then focus its window.
-    @Test(.enabled(if: tmuxPath != nil)) func jumpNoClientThenAttachedClient() async throws {
+    struct ClientDidNotAttach: Error { let session: String }
+
+    static func listClients() async -> [TmuxClientInfo] {
+        TmuxClient.parseClients(await tmux(["list-clients", "-F", TmuxClient.clientFormat]).stdout)
+    }
+
+    /// Attaches a real tmux client to `session` on the private server through a pty (`script`) and waits for it.
+    /// Returns the process (terminate it when done) and the client's tty.
+    static func attachClient(to session: String) async throws -> (Process, String) {
+        let before = Set(await listClients().map(\.tty))
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/script")
+        p.arguments = ["-q", "/dev/null", tmuxPath!, "-L", socket, "-f", "/dev/null", "attach", "-t", session]
+        var e = ProcessInfo.processInfo.environment; e["TMUX"] = nil; e["TMUX_PANE"] = nil; e["TERM"] = "xterm-256color"
+        p.environment = e
+        p.standardInput = Pipe(); p.standardOutput = FileHandle.nullDevice; p.standardError = FileHandle.nullDevice
+        try p.run()
+        for _ in 0..<60 {
+            try await Task.sleep(nanoseconds: 50_000_000)
+            if let c = await listClients().first(where: { !before.contains($0.tty) && $0.session == session }) {
+                return (p, c.tty)
+            }
+        }
+        p.terminate()
+        throw ClientDidNotAttach(session: session)
+    }
+
+    /// tty → session of every attached client.
+    static func clientSessions() async -> [String: String] {
+        Dictionary(await listClients().map { ($0.tty, $0.session) }, uniquingKeysWith: { a, _ in a })
+    }
+
+    /// Jump resolves the pane live from the ppid chain (no prior snapshot). Then: with no client, the attach command
+    /// and a note; with one client elsewhere, that client is switched and the terminal on ITS tty is focused; with a
+    /// client already on the session, that one is used and the others stay where they are; and when the terminal
+    /// could not be focused exactly, a note says why. The clients are pty clients started by `script`.
+    @Test(.enabled(if: tmuxPath != nil)) func jumpSwitchesAClientAndFocusesItsTty() async throws {
         let d = ScratchDir("tmux-jump")
         Self.killPrivateServer()
         #expect(await Self.tmux(["new-session", "-d", "-s", "base", "-c", d.path, "cat"]).ok)
         #expect(await Self.tmux(["new-session", "-d", "-s", "target", "-n", "tw", "-c", d.path, "sleep 60"]).ok)
-        var client: Process?
+        #expect(await Self.tmux(["new-window", "-d", "-t", "=target:", "-n", "tw2", "-c", d.path, "sleep 61"]).ok)
+        var started: [Process] = []
         defer {
-            if let c = client, c.isRunning { c.terminate() }       // our own `script` child only
+            for c in started where c.isRunning { c.terminate() }   // our own `script` children only
             Self.killPrivateServer()
         }
         let panes = TmuxClient.parsePanes(await Self.tmux(["list-panes", "-a", "-F", TmuxClient.paneFormat]).stdout)
-        let target = try #require(panes.first { $0.session == "target" })
-        // The "claude" is the pane's own process (sleep, started by our private server).
-        let bi = try #require(LiveSysKit.bsdInfo(target.panePid))
-        let key = ProcKey(pid: target.panePid, startSec: Int(bi.pbi_start_tvsec))
+        let first = try #require(panes.first { $0.session == "target" && $0.windowName == "tw" })
+        let second = try #require(panes.first { $0.session == "target" && $0.windowName == "tw2" })
+        // Each "claude" is a pane's own process (sleep, started by our private server).
+        func key(_ p: TmuxPane) throws -> ProcKey {
+            ProcKey(pid: p.panePid, startSec: Int(try #require(LiveSysKit.bsdInfo(p.panePid)).pbi_start_tvsec))
+        }
+        let k1 = try key(first), k2 = try key(second)
 
         let desk = RecordingDesktop()
         let src = ClaudeSource(env: env(d, dryRun: true), desktop: desk, watch: false)
-        await src.jump(key)
-        #expect(desk.calls.last == "noClient:tmux attach -t target")
 
-        // Attach a real client to "base" through a pty.
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/usr/bin/script")
-        p.arguments = ["-q", "/dev/null", Self.tmuxPath!, "-L", Self.socket, "-f", "/dev/null", "attach", "-t", "base"]
-        var e = ProcessInfo.processInfo.environment; e["TMUX"] = nil; e["TMUX_PANE"] = nil; e["TERM"] = "xterm-256color"
-        p.environment = e
-        p.standardInput = Pipe(); p.standardOutput = FileHandle.nullDevice; p.standardError = FileHandle.nullDevice
-        try p.run(); client = p
-        var clients: [TmuxClientInfo] = []
-        for _ in 0..<40 where clients.isEmpty {
-            try await Task.sleep(nanoseconds: 50_000_000)
-            clients = TmuxClient.parseClients(await Self.tmux(["list-clients", "-F", TmuxClient.clientFormat]).stdout)
+        // 1. Nothing is attached: the attach command is copied, and the note says so.
+        let none = await src.jumpNote(k1)
+        #expect(desk.calls == ["noClient:tmux attach -t target"])
+        #expect(none == "No terminal is attached to tmux. Copied “tmux attach -t target”: paste it in Ghostty.")
+
+        // 2. One client, on "base": it is switched to "target", and the terminal on ITS tty is focused. No note.
+        let (c1, tty1) = try await Self.attachClient(to: "base"); started.append(c1)
+        #expect(await src.jumpNote(k1) == nil)
+        #expect(await Self.clientSessions() == [tty1: "target"])
+        #expect(desk.calls.last == "focus:\(tty1)")
+
+        // 3. A second client, on "base". Jumping to the other window of "target" uses the client that already shows
+        //    "target" (the one on "base" stays there), selects that window, and focuses that client's tty.
+        let (c2, tty2) = try await Self.attachClient(to: "base"); started.append(c2)
+        #expect(tty2 != tty1)
+        #expect(await src.jumpNote(k2) == nil)
+        #expect(await Self.clientSessions() == [tty1: "target", tty2: "base"])
+        #expect(desk.calls.last == "focus:\(tty1)")
+        let active = await Self.tmux(["display-message", "-p", "-t", "=target:", "#{window_name} #{pane_id}"]).stdout
+        #expect(active.trimmingCharacters(in: .whitespacesAndNewlines) == "tw2 \(second.paneId)")
+
+        // 4. tmux switched, but the terminal could not be focused exactly: the note says what happened.
+        desk.focusResult = .notAllowed
+        let denied = try #require(await src.jumpNote(k1))
+        #expect(denied.hasPrefix("tmux switched to “target”, but Ghostty may show another window."))
+        #expect(denied.contains("System Settings ▸ Privacy & Security ▸ Automation"))
+        desk.focusResult = .notFound
+        let elsewhere = try #require(await src.jumpNote(k2))
+        #expect(elsewhere.contains("its terminal (\(tty1)) is not a Ghostty window"))
+        desk.focusResult = .failed("Ghostty did not answer")
+        #expect(await src.jumpNote(k1)?.hasSuffix("(Ghostty did not answer).") == true)
+        #expect(desk.calls.suffix(3) == ["focus:\(tty1)", "focus:\(tty1)", "focus:\(tty1)"])
+    }
+
+    @Test func focusNotes() {
+        #expect(ClaudeSource.tmuxFocusNote(.exact, session: "s", tty: "/dev/ttys001") == nil)
+        #expect(ClaudeSource.tmuxFocusNote(.appOnly, session: "s", tty: "/dev/ttys001") == nil)
+        for f in [TerminalFocus.notAllowed, .notFound, .failed("x")] {
+            #expect(ClaudeSource.tmuxFocusNote(f, session: "my sess", tty: "/dev/ttys001")?
+                .hasPrefix("tmux switched to “my sess”, but ") == true)
         }
-        try #require(clients.first?.session == "base", "pty client did not attach")
-        await src.jump(key)
-        let after = TmuxClient.parseClients(await Self.tmux(["list-clients", "-F", TmuxClient.clientFormat]).stdout)
-        #expect(after.first?.session == "target")
-        #expect(desk.calls.last == "focus:tw")
+    }
+
+    @Test func ghosttyFocusScriptAndOutcome() {
+        #expect(GhosttyDesktop.focusScript(tty: "/dev/ttys028")
+            == #"tell application id "com.mitchellh.ghostty" to focus (first terminal whose tty is "/dev/ttys028")"#)
+        // A tty is never trusted as script text.
+        #expect(GhosttyDesktop.focusScript(tty: #"x" & (do shell script "id") & "\"#).hasSuffix(
+            #"whose tty is "x\" & (do shell script \"id\") & \"\\")"#))
+
+        #expect(GhosttyDesktop.focusOutcome(ok: true, stderr: "", timedOut: false) == .exact)
+        // What Ghostty 1.4.0 answers when no terminal has that tty (captured).
+        let missing = "51:53: execution error: Ghostty got an error: Can’t get terminal 1 whose tty = \"/dev/ttys999\". "
+            + "Invalid index. (-1719)\n"
+        #expect(GhosttyDesktop.focusOutcome(ok: false, stderr: missing, timedOut: false) == .notFound)
+        let refused = "40:45: execution error: Not authorized to send Apple events to Ghostty. (-1743)\n"
+        #expect(GhosttyDesktop.focusOutcome(ok: false, stderr: refused, timedOut: false) == .notAllowed)
+        #expect(GhosttyDesktop.focusOutcome(ok: false, stderr: "", timedOut: true) == .failed("Ghostty did not answer"))
+        let other = "0:5: execution error: Ghostty got an error: AppleScript is disabled. (-10000)\n"
+        #expect(GhosttyDesktop.focusOutcome(ok: false, stderr: other, timedOut: false)
+            == .failed("Ghostty got an error: AppleScript is disabled. (-10000)"))
+        #expect(GhosttyDesktop.focusOutcome(ok: false, stderr: "", timedOut: false) == .failed("osascript failed"))
+
+        #expect(GhosttyDesktop.Automation(status: 0) == .granted)
+        #expect(GhosttyDesktop.Automation(status: -1743) == .denied)
+        #expect(GhosttyDesktop.Automation(status: -1744) == .notDetermined)
+        #expect(GhosttyDesktop.Automation(status: -600) == .notRunning)
+        #expect(GhosttyDesktop.Automation(status: -50) == .other(-50))
+    }
+}
+
+// MARK: - Live, and it changes what is on screen (opt-in, by hand):
+//   HEADROOM_LIVE_FOCUS_TTY=/dev/ttysNNN swift test --filter HeadroomClaudeTests.LiveGhosttyFocus
+// Runs the real GhosttyDesktop against the running Ghostty: focuses the terminal on that tty, checks that its window is
+// now Ghostty's front window, then focuses the window that was in front before. It never asks for Automation
+// (mayAsk is false): without the permission the test fails with `.notAllowed`.
+
+@Suite struct LiveGhosttyFocus {
+    static let tty = ProcessInfo.processInfo.environment["HEADROOM_LIVE_FOCUS_TTY"]
+
+    static func frontTtys() async -> [String] {
+        let script = "tell application id \"\(GhosttyDesktop.bundleId)\" to get tty of terminals of front window"
+        let r = await Shell.run("/usr/bin/osascript", ["-e", script], timeout: 5)
+        return r.stdout.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+    }
+
+    /// The frontmost app, as LaunchServices names it.
+    static func frontApp() async -> String {
+        let r = await Shell.run("/bin/sh", ["-c", "lsappinfo info -only name \"$(lsappinfo front)\""], timeout: 5)
+        return r.stdout.split(separator: "\"").first.map(String.init) ?? "?"      // "Ghostty" ASN:… → Ghostty
+    }
+
+    @Test(.enabled(if: tty != nil)) func focusesTheTerminalOnATty() async throws {
+        let tty = try #require(Self.tty)
+        let before = await Self.frontTtys(), appBefore = await Self.frontApp()
+        let desk = GhosttyDesktop()
+        let outcome = await desk.focusTerminal(tty: tty)
+        let during = await Self.frontTtys(), appDuring = await Self.frontApp()
+        if let back = before.first, !before.contains(tty) { _ = await desk.focusTerminal(tty: back) }   // put it back
+        let after = await Self.frontTtys()
+        print("LiveGhosttyFocus: permission \(await GhosttyDesktop.automation(ask: false)), outcome \(outcome), "
+            + "front window before \(before), during \(during), after \(after); "
+            + "front app before \(appBefore), during \(appDuring)")
+        #expect(outcome == .exact)
+        #expect(during.contains(tty))
+        #expect(appDuring == "Ghostty")          // also when another app was in front before
+        #expect(after == before)
+        #expect(await desk.focusTerminal(tty: "/dev/ttys999-headroom-none") == .notFound)
     }
 }
 

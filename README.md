@@ -34,7 +34,7 @@ Wire protocol: [`docs/protocol.md`](docs/protocol.md). CLI: [`docs/cli.md`](docs
   - Rex, for the same with sessions that run in Rex: the `rex` CLI at `~/.local/bin/rex`, or the one inside
     `/Applications/Rex.app` or `Rex Beta.app` (`HEADROOM_REX` sets another path). Built against Rex 0.1.0-preview.20 (API revision 16);
     see [tmux and Rex](#tmux-and-rex);
-  - Ghostty, so that Jump brings the right terminal window forward (sessions in tmux);
+  - Ghostty 1.3 or later, so that Jump brings the right terminal window forward (sessions in tmux);
   - AeroSpace (`install.sh` can add a rule so the Headroom window floats);
   - `openssl` for `scripts/make-signing-cert.sh` (the system LibreSSL works);
   - Bun and Chrome for Testing, only for the end-to-end tests in `Tests/e2e-chrome/`.
@@ -270,6 +270,11 @@ To forget the signing identity: open Keychain Access, find "Headroom Local Signi
 - **Two "Headroom Local Signing" identities**: `build.sh` uses the first one. Pin one with
   `SIGN_ID=<sha1> scripts/build.sh` (`security find-identity -p codesigning` lists them).
 - **Headroom's own cost**: the footer shows the app, the host and the helper extension's memory.
+- **Jump to a session in tmux brings up the wrong Ghostty window**: the toast says why. Usually Headroom is not
+  allowed to control Ghostty: turn it on in System Settings ▸ Privacy & Security ▸ Automation ▸ Headroom. macOS asks
+  once, at the first Jump; if you never saw the prompt, run `tccutil reset AppleEvents dev.adder.headroom` and Jump
+  again (this also resets the Chrome permission). Headroom finds the window by the tmux client's tty, so window titles
+  do not matter.
 - **Jump into Rex brings Rex forward but shows another session**: the toast names the Rex session to open and says
   why. Usually Remote Control is off: turn it on in Rex. If it says Rex.app is not connected, Jump again once Rex.app
   has a window open.

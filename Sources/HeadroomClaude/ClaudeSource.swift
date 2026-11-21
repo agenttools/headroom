@@ -353,8 +353,9 @@ public final class ClaudeSource: ClaudeProvider, @unchecked Sendable {
 
     public func jump(_ s: ProcKey) async { _ = await jumpNote(s) }
 
-    /// Jump, then a note for the user when Jump could not finish the switch (Rex only; nil = nothing to say).
-    /// Like tmux's jump it is not gated by HEADROOM_DRY_RUN: it changes what is shown, never what runs.
+    /// Jump, then a note for the user when Jump could not finish the switch (nil = nothing to say): for tmux, when
+    /// the session's Ghostty window could not be brought forward, tmux refused, or no client is attached.
+    /// Jump is not gated by HEADROOM_DRY_RUN, for tmux or Rex: it changes what is shown, never what runs.
     public func jumpNote(_ s: ProcKey) async -> String? {
         if let r = lock.withLock({ lastRex[s] }) { return await rexJump(blockId: r.blockId) }
         let (panes, clients) = await tmuxState()
@@ -378,19 +379,46 @@ public final class ClaudeSource: ClaudeProvider, @unchecked Sendable {
             }
         }
         guard let pane else {
-            await desktop.focusTerminal(windowName: nil)       // not in tmux: bring the terminal app forward
+            _ = await desktop.focusTerminal(tty: nil)          // not in tmux: bring the terminal app forward
             return nil
         }
-        guard !clients.isEmpty else {
-            await desktop.noClientAttached(attachCommand: "tmux attach -t \(Self.shellQuote(pane.session))")
+        switch await tmux.jump(to: pane, clients: clients) {       // the state read above: no second listing
+        case .switched(let tty, let session):
+            return Self.tmuxFocusNote(await desktop.focusTerminal(tty: tty), session: session, tty: tty)
+        case .noClient(let session):
+            return await tmuxNoClient(session: session)
+        case .noPane:                                              // not answered by jump(to:clients:)
+            _ = await desktop.focusTerminal(tty: nil)
+            return "This session's tmux pane is gone, so Ghostty was only brought forward."
+        case .failed(let session, let reason):
+            _ = await desktop.focusTerminal(tty: nil)
+            return "tmux could not switch to “\(session)” (\(reason)), so Ghostty was only brought forward."
+        }
+    }
+
+    /// SPEC §7.6 step 5: nothing shows the session, so the attach command goes to the clipboard and Ghostty comes
+    /// forward. The note says so, because the clipboard changed.
+    private func tmuxNoClient(session: String) async -> String {
+        let command = "tmux attach -t \(Self.shellQuote(session))"
+        await desktop.noClientAttached(attachCommand: command)
+        return "No terminal is attached to tmux. Copied “\(command)”: paste it in Ghostty."
+    }
+
+    /// The note for a tmux Jump whose client was switched (SPEC §7.6 step 4): nil when the right Ghostty window came
+    /// forward, else what happened instead and what to do about it.
+    static func tmuxFocusNote(_ focus: TerminalFocus, session: String, tty: String) -> String? {
+        switch focus {
+        case .exact, .appOnly:
             return nil
+        case .notAllowed:
+            return "tmux switched to “\(session)”, but Ghostty may show another window. To fix this, allow Headroom "
+                + "to control Ghostty in System Settings ▸ Privacy & Security ▸ Automation."
+        case .notFound:
+            return "tmux switched to “\(session)”, but its terminal (\(tty)) is not a Ghostty window, so Ghostty was "
+                + "only brought forward."
+        case .failed(let why):
+            return "tmux switched to “\(session)”, but Ghostty may show another window (\(why))."
         }
-        if await tmux.jump(paneId: pane.paneId) {
-            await desktop.focusTerminal(windowName: pane.windowName)
-        } else {
-            await desktop.noClientAttached(attachCommand: "tmux attach -t \(Self.shellQuote(pane.session))")
-        }
-        return nil
     }
 
     /// Rex Jump (§7.6): `rex focus -s SID BID` on the server, bring Rex.app forward, then ask the app to show the
@@ -494,8 +522,8 @@ public final class ClaudeSource: ClaudeProvider, @unchecked Sendable {
                 let clients = await tmux.clients()
                 if clients.isEmpty {
                     await desktop.noClientAttached(attachCommand: "tmux attach -t \(Self.shellQuote(session))")
-                } else if await tmux.jump(paneId: paneId) {
-                    await desktop.focusTerminal(windowName: Self.windowName(rec.title))
+                } else if let tty = await tmux.jump(paneId: paneId).tty {
+                    _ = await desktop.focusTerminal(tty: tty)
                 }
             }
             return (.done, nil)

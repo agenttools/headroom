@@ -15,7 +15,10 @@ final class StubOrderDesktop: ClaudeDesktop, @unchecked Sendable {
     private var _calls: [String] = []
     init(_ stub: RexStub) { self.stub = stub }
     var calls: [String] { lock.withLock { _calls } }
-    func focusTerminal(windowName: String?) async { lock.withLock { _calls.append("focus:\(windowName ?? "")") } }
+    func focusTerminal(tty: String?) async -> TerminalFocus {
+        lock.withLock { _calls.append("focus:\(tty ?? "")") }
+        return tty == nil ? .appOnly : .exact
+    }
     func noClientAttached(attachCommand: String) async { lock.withLock { _calls.append("noClient:\(attachCommand)") } }
     func focusRex() async {
         let n = stub.calls().count
@@ -214,10 +217,11 @@ final class StubOrderDesktop: ClaudeDesktop, @unchecked Sendable {
         let x = await setup(snapshot: false); defer { x.stub.remove() }
         let sys = x.world.sys
         x.src.liveSys = { sys }
-        // 309: tmux pane %5 is nearer than the Rex server; its inherited REX_BLOCK is ignored (tmux is /nonexistent
-        // here, so the attach hint).
-        #expect(await x.src.jumpNote(x.key(309)) == nil)
-        #expect(x.desk.calls.last == "noClient:tmux attach -t nested")
+        // 309: tmux pane %5 is nearer than the Rex server; its inherited REX_BLOCK is ignored. tmux is /nonexistent
+        // here, so the switch fails: Ghostty forward only, and a note with the reason.
+        #expect(await x.src.jumpNote(x.key(309))
+            == "tmux could not switch to “nested” (tmux not found at /nonexistent/tmux), so Ghostty was only brought forward.")
+        #expect(x.desk.calls.last == "focus:")
         // 308: stale REX_BLOCK under launchd → neither multiplexer → terminal app forward.
         #expect(await x.src.jumpNote(x.key(308)) == nil)
         #expect(x.desk.calls.last == "focus:")
@@ -255,9 +259,9 @@ final class StubOrderDesktop: ClaudeDesktop, @unchecked Sendable {
         #expect(x.desk.calls == ["focus:"])
         await x.src.jump(ProcKey(pid: 999_999, startSec: 1))
         #expect(x.desk.calls == ["focus:", "focus:"])
-        // 309 (tmux in Rex) goes to its tmux pane (tmux is /nonexistent here, so the attach hint).
-        #expect(await x.src.jumpNote(x.key(309)) == nil)
-        #expect(x.desk.calls.last == "noClient:tmux attach -t nested")
+        // 309 (tmux in Rex) goes to its tmux pane (tmux is /nonexistent here, so the switch fails with a note).
+        #expect(await x.src.jumpNote(x.key(309))?.hasPrefix("tmux could not switch to “nested”") == true)
+        #expect(x.desk.calls.last == "focus:")
         #expect(x.stub.calls().isEmpty)
     }
 }

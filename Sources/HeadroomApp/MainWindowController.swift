@@ -443,7 +443,7 @@ import HeadroomContracts
         if !tabs.isEmpty { add("Sleep Tab\(tabs.count == 1 ? "" : "s")", { [weak self] in self?.sleepTabs(targets) }) }
         menu.addItem(.separator())
         if let first = targets.first, targets.count == 1 {
-            add("Jump", { [weak self] in self?.jump(first) }, enabled: first.kind == .tab || first.kind == .session || first.kind == .window)
+            add("Jump", { [weak self] in self?.jump(first) }, enabled: [.tab, .session, .window, .process].contains(first.kind))
             add("Peek", { [weak self] in
                 self?.outlineCtl.select(ids: [first.id], reveal: false); self?.peek(reuse: false)
             })
@@ -642,12 +642,19 @@ import HeadroomContracts
     func jump(_ row: Row?) {
         guard let row else { return }
         var target = row.item
-        if case let .chromeWindow(b, wid)? = row.item {
+        switch row.item {
+        case let .chromeWindow(b, wid)?:        // a window: its active tab
             target = world.chrome.tabs.first { $0.browserPid == b && $0.windowId == wid && $0.active }?.itemID
+        case let .process(k)?:                  // a session's child process: its session
+            target = world.claude.sessions.first { ($0.children + $0.background).contains { $0.root == k } }?.itemID
+        case .leftover?, .chromeOverhead?:      // nothing shows these: there is nowhere to jump to
+            target = nil
+        default: break
         }
         guard let id = target else { NSSound.beep(); return }
         let executor = ctx.executor
-        // A Rex Jump returns a note when it could only bring Rex forward (pane not found, or the app did not switch).
+        // A session Jump returns a note when it could not finish the switch. Rex: the pane was not found, or the app
+        // did not switch. tmux: the Ghostty window could not be brought forward, or no client is attached (§7.6).
         Task { [weak self] in
             if let note = await executor.jumpNote(id) { self?.showToast(ToastModel(headline: note)) }
         }

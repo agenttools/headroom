@@ -1,6 +1,6 @@
 # Design decisions
 
-These decisions were made on 2026-09-30 (item 6 on 2026-11-19, item 7 on 2026-11-20), after [SPEC.md](SPEC.md) was written. Where they differ from SPEC.md, they override it.
+These decisions were made on 2026-09-30 (item 6 on 2026-11-19, item 7 on 2026-11-20, item 8 on 2026-11-21), after [SPEC.md](SPEC.md) was written. Where they differ from SPEC.md, they override it.
 
 1. **Chrome:** helper extension + native-messaging host for per-tab memory, with the JXA/AppleScript fallback (SPEC §4 as written).
 2. **Close flow:** undo-first. Close at once and show an Undo toast. Show the confirm sheet only for the risky triggers in SPEC §7.
@@ -9,6 +9,21 @@ These decisions were made on 2026-09-30 (item 6 on 2026-11-19, item 7 on 2026-11
 5. **CLI is in scope for v1** (moved up from SPEC's v1.1 list). See below.
 6. **Rex support** (decided 2026-11-19): sessions that run in Rex get the same depth as sessions in tmux (location, visibility, Peek, Jump, Undo), and tmux behaviour is unchanged. See below and SPEC §5.1.
 7. **Docker insight** (decided 2026-11-20): Headroom shows Docker's memory and disk use, read-only. See below and SPEC §5.2.
+8. **tmux Jump finds the Ghostty window by tty** (decided 2026-11-21): see below and SPEC §7.6.
+
+## tmux Jump: the Ghostty window is found by tty
+
+Jump to a session in tmux switched the tmux client but brought up the wrong Ghostty window. There were three causes, and each has its own fix.
+
+- **The permission was never asked for.** The exact focus ran only when Automation ▸ Ghostty was already granted, and nothing ever asked. Now the app asks at the first Jump that needs it (`GhosttyDesktop(mayAsk: true)`, set only for the app's window). The CLI and the app's one-shot modes never ask.
+- **The window was matched by title.** The title is the tmux window name. Two clients on one session share it, and it changes while Claude works, so a title read before the jump is often stale. Now the terminal is matched by the tmux client's tty (`client_tty` equals the `tty` of the Ghostty terminal, Ghostty 1.3 or later), which is exact and unique.
+  - Rejected: a temporary unique title (it changes a global tmux option and makes every title flash), Accessibility (SPEC §8.5 says it is never used), and a Shortcuts shortcut built on Ghostty's App Intents (the user would have to install it).
+- **Nothing told the user.** Every failure on the tmux path was silent. Now `jumpNote` returns a note for tmux as it does for Rex: the Ghostty window could not be focused (and why), tmux refused, or no client is attached and the attach command was copied.
+
+Two smaller changes:
+
+- The client that is switched is still the one already attached to the session (else the most active one). Without the permission, Headroom does not switch to "the client in the front window" instead: that would move a window away from its session, and the front window cannot be known without the permission.
+- When tmux refuses the switch, the attach command is no longer copied (SPEC §7.6 step 5 is for "no client attached" only).
 
 ## CLI: `headroom`
 

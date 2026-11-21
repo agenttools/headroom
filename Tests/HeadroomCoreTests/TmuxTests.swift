@@ -123,8 +123,9 @@ import HeadroomContracts
         #expect(Set(plain.map(\.windowName)) == ["first", "second win"])
 
         #expect(await tmux.clients().isEmpty)
-        #expect(await tmux.jump(paneId: p2) == false)            // no client attached → false
-        #expect(await tmux.jump(paneId: "%424242") == false)
+        #expect(await tmux.jump(paneId: p2) == .noClient(session: "hr-a"))
+        #expect(await tmux.jump(paneId: p2).tty == nil)
+        #expect(await tmux.jump(paneId: "%424242") == .noPane)
 
         await killPrivateServer()
         #expect(await tmux.panes().isEmpty)

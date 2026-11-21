@@ -207,7 +207,7 @@ struct QAOptions {
     }
 }
 
-let ctx = Headroom.context(env: env)
+let ctx = Headroom.context(env: env, mayAskForGhostty: true)   // the window: Jump asks for Ghostty once (§8.5)
 let app = NSApplication.shared
 let delegate = AppDelegate(ctx: ctx, env: env, qa: QAOptions(arguments))
 app.delegate = delegate

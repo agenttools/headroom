@@ -132,17 +132,43 @@ public struct TmuxClient: Sendable {
 
     // MARK: - Mutating (user-triggered only)
 
-    /// SPEC §7.6 steps 1–3: `switch-client -c <tty> -t <sess>; select-window -t %P; select-pane -t %P`.
-    /// Returns false when the pane is gone or no client is attached (the caller then copies `tmux attach`).
-    public func jump(paneId: String) async -> Bool {
+    /// What `jump(paneId:)` did.
+    public enum Jump: Sendable, Equatable {
+        /// tmux now shows the pane on this client. `tty` is the client's terminal device (`client_tty`), which is
+        /// how the terminal app finds the window to bring forward (SPEC §7.6 step 4).
+        case switched(tty: String, session: String)
+        /// The pane is gone.
+        case noPane
+        /// No client is attached to the server (the caller then copies `tmux attach`).
+        case noClient(session: String)
+        /// tmux refused or did not answer. `reason` is tmux's message, for the note Jump shows.
+        case failed(session: String, reason: String)
+
+        public var tty: String? { if case .switched(let t, _) = self { t } else { nil } }
+    }
+
+    /// SPEC §7.6 steps 1–3 for a pane id: reads the panes and clients, then `jump(to:clients:)`.
+    public func jump(paneId: String) async -> Jump {
         async let ps = panes()
         async let cs = clients()
         let (allPanes, allClients) = await (ps, cs)
-        guard let pane = allPanes.first(where: { $0.paneId == paneId }),
-              let client = Self.jumpClient(for: pane.session, clients: allClients) else { return false }
+        guard let pane = allPanes.first(where: { $0.paneId == paneId }) else { return .noPane }
+        return await jump(to: pane, clients: allClients)
+    }
+
+    /// SPEC §7.6 steps 2–3, on state the caller just read: picks the client (`jumpClient`), then runs
+    /// `switch-client -c <tty> -t <sess>; select-window -t %P; select-pane -t %P`. Never answers `.noPane`: a pane
+    /// that went away since the caller's read is tmux's own error, in `.failed`.
+    public func jump(to pane: TmuxPane, clients allClients: [TmuxClientInfo]) async -> Jump {
+        guard let client = Self.jumpClient(for: pane.session, clients: allClients) else {
+            return .noClient(session: pane.session)
+        }
+        let paneId = pane.paneId
         let r = await run(["switch-client", "-c", client.tty, "-t", pane.session, ";",
                            "select-window", "-t", paneId, ";", "select-pane", "-t", paneId])
-        return r.ok
+        if r.ok { return .switched(tty: client.tty, session: pane.session) }
+        let said = Self.firstLine(r.stderr) ?? (r.timedOut ? "tmux did not answer" : "tmux exited with status \(r.status)")
+        return .failed(session: pane.session, reason: said)
     }
 
     /// `new-window -d -t '<sess>:' -n <name> -c <cwd>`; creates the session if it is gone (SPEC §7.7).

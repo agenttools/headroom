@@ -574,10 +574,19 @@ With `HEADROOM_DRY_RUN=1`, every call logs and returns `.dryRun`.
   1. Resolve `%pane` to its session.
   2. Pick the client with the highest `client_activity` attached to that session, or any client if none is.
   3. Run `switch-client -c <tty> -t <sess>; select-window -t %P; select-pane -t %P`.
-  4. If Ghostty Automation is granted: `osascript` `tell application "Ghostty" to focus (first terminal whose name is "<window_name>")`. Otherwise, or if no name matches, activate Ghostty with `NSRunningApplication`, which brings up the last-key window (usually the most active client).
-  5. If no client is attached, copy `tmux attach -t <sess>` to the clipboard and run `open -a Ghostty`. `open -na Ghostty --args -e` is not used because it is unverified.
+  4. Bring that client's terminal forward. A tmux client's `client_tty` is the tty of the Ghostty terminal that shows it, and Ghostty's AppleScript dictionary has it (Ghostty 1.3 or later). So, if Ghostty Automation is granted: `osascript` `tell application id "com.mitchellh.ghostty" to focus (first terminal whose tty is "<client tty>")`. Then, in every case, activate Ghostty with `NSRunningApplication`; if Ghostty is not the active app within 0.5 s, run `open -b com.mitchellh.ghostty`. The terminal is not found by its title: the title is the tmux window name, which two clients on one session share and which changes while Claude works.
+     - Automation not decided yet: the app asks first (the macOS prompt, once; §8.5). The CLI never asks.
+     - If the terminal could not be focused, Ghostty still comes forward, with the window used last, and the app shows a toast that starts "tmux switched to “<session>”, but" and gives the reason:
+       - Automation not granted: "Ghostty may show another window. To fix this, allow Headroom to control Ghostty in System Settings ▸ Privacy & Security ▸ Automation.";
+       - no Ghostty terminal has that tty (the client runs in another terminal app, or Ghostty is not running): "its terminal (<tty>) is not a Ghostty window, so Ghostty was only brought forward.";
+       - any other failure: "Ghostty may show another window (<reason>)."
+  5. If no client is attached, copy `tmux attach -t <sess>` to the clipboard and run `open -b com.mitchellh.ghostty`, with the toast "No terminal is attached to tmux. Copied “tmux attach -t <sess>”: paste it in Ghostty." `open -na Ghostty --args -e` is not used because it is unverified.
 
-  A session in neither tmux nor Rex: Ghostty is activated, as in step 4.
+  If tmux refuses step 3 (for example, the pane went away), Ghostty is activated and the toast is "tmux could not switch to “<session>” (<tmux's message>), so Ghostty was only brought forward." Nothing is copied.
+
+  A session in neither tmux nor Rex: Ghostty is activated, as in step 4, with no toast.
+
+  Jump on a child process row of a session jumps to that session. Rows with nowhere to go (leftovers, Chrome overhead) beep.
 - **Session in Rex** (§5.1):
   1. Find the block: the one the last refresh placed the session in, or, when no refresh has placed it, the claude's `REX_BLOCK` when its ppid chain reaches a Rex server first. A fresh discovery pass gives the block's session and tab.
   2. `rex focus -s <session> <block>` on the server. This makes the block's tab the session's active tab and focuses the block. It changes shared session state, as `select-window` does in tmux.
@@ -682,7 +691,7 @@ scripts/                  build.sh, install.sh, uninstall.sh, make-signing-cert.
 | Chrome process totals and Chrome itself | nothing | – |
 | Per-tab memory, Sleep, restore with history, precise tab jump | helper extension (Developer mode + Load unpacked, once per profile) | "—" per tab |
 | Tab list and close without the extension | Automation ▸ Google Chrome | Totals only |
-| Jump into the exact Ghostty window | Automation ▸ Ghostty (asked at the first Jump, explained beforehand) | tmux still switches; Ghostty is activated generically |
+| Jump into the exact Ghostty window | Automation ▸ Ghostty. The app asks at the first Jump to a session in tmux (the macOS prompt, which says why); the CLI never asks. | tmux still switches; Ghostty is activated generically, and a toast says the window may be another one and where to allow it (§7.6) |
 | Jump into another Rex session | Remote Control turned on in Rex (a Rex setting, not a macOS permission). Rex.app is brought forward with `open -b`, so no Automation is needed. | Rex still focuses the pane and comes forward; a toast asks you to open the session |
 | Show a session that Undo created in Rex | The same as Jump into another Rex session | The session is still resumed; the Undo toast (and `headroom undo`) names the new Rex session to open |
 | Accessibility | never used | – |
@@ -768,6 +777,7 @@ scripts/                  build.sh, install.sh, uninstall.sh, make-signing-cert.
 | `sessions.restore` keeps history, and matching recently-closed entries is reliable | Chrome for Testing with a throwaway profile (`Tests/e2e-chrome/`) | `tabs.create` by URL |
 | `tabs.remove` or AppleScript close vs `beforeunload`; `tabs.discard` on the active tab | Chrome for Testing (`Tests/e2e-chrome/`) | 1 s verification plus [Jump]; Sleep skips the active tab |
 | An `osascript` child's TCC prompt is attributed to Headroom | `scripts/tcc-probe.sh`, run by hand (a throwaway test app aimed at Ghostty) | Use `NSAppleScript` on a dedicated serial thread |
+| Ghostty: `focus (first terminal whose tty is …)` puts that terminal's window in front, also when another app is active | Verified on 2026-11-21 with Ghostty 1.4.0, six tmux clients in six windows: `HEADROOM_LIVE_FOCUS_TTY=/dev/ttysNNN swift test --filter HeadroomClaudeTests.LiveGhosttyFocus` (by hand; it changes what is on screen, then puts it back). **Not verified:** the macOS prompt that Headroom.app itself shows at the first Jump (the test ran from a terminal, which already had the permission) | The toast in §7.6 step 4 |
 | Writing to NativeMessagingHosts from install.sh | `install.sh` in a scratch HOME; the real write happens in your own install run | Print the JSON for the user to copy |
 | Rex: a Rex.app window that shows a tab other than the session's `active_window_id` (several workspace windows, a torn-off tab) | **Not verified** (checking needs a mutating Rex action). By hand: tear a tab off once, run `headroom selftest claude`, and compare the `visible` flags with the screen | None yet: such a pane may show as not visible (§5.1) |
 | Rex: `do session.select` switches Rex.app to the session (Remote Control on) | **Not verified live** during the build (tests use a fake `rex`). By hand: Jump to a session in another Rex session | Jump's toast asks you to open the session (§7.6) |
@@ -891,7 +901,7 @@ public protocol ActionExecutor: Sendable {
   func sleep(_ tabs: [ItemID]) async -> [ItemID: Outcome]
   func undo(_ r: [ClosedRecord]) async -> [ClosedRecord: Outcome]
   func jump(_ id: ItemID) async
-  func jumpNote(_ id: ItemID) async -> String? }           // Jump + the Rex note for a toast (§7.6); default: jump, nil
+  func jumpNote(_ id: ItemID) async -> String? }           // Jump + the tmux or Rex note for a toast (§7.6); default: jump, nil
 ```
 
 `ClaudeSession` also has helpers that treat tmux and Rex alike: `inMultiplexer` (in tmux or Rex), `onScreen` (tmux visible or current, or Rex visible) and `placeLabel` (`hub:3.1`, `rex foundry:2.1` or nil). Rex support adds no new reason codes: `visiblePane` and `notInTmux` keep their names and cover Rex.
@@ -907,6 +917,7 @@ Spike S, an optional check that the helper works in your own Chrome, is describe
   - a scan of 800 pids in under 5 ms;
   - the ownership fixture tests (§3) pass, with no pid in two buckets, and agent-browser is attached to session 80876;
   - tmux parsing works on captured output;
+  - tmux Jump on a private server with pty clients: no client (the attach command and its toast), a client on another session (it is switched, and the terminal on its tty is focused), a client already on the session (it is used, the others stay), and the toast for each way the terminal could not be focused; the Ghostty focus script and how `osascript`'s answer is read;
   - Rex parsing works on hand-written `rex … --json` fixtures (`Tests/Fixtures/rex-*.json`: tab and pane numbering, zoomed, floating and minimized layers, app and CLI clients), and viewer state it cannot read (an unknown active tab, clients of unknown kind or without an id) counts as visible;
   - the tmux-or-Rex process walk (§5.1), including tmux inside Rex, a hidden `login`, launchd and ppid cycles;
   - `RexClient` sends exactly the expected argv to `RexStub`, refuses `server …` and malformed server addresses without running anything, stops discovery at its deadline, and inspects the sessions that hold a claude first even beyond the 64th;
